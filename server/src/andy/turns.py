@@ -48,6 +48,48 @@ def speech_only(transcript: str) -> str:
     return text if any(character.isalnum() for character in text) else ""
 
 
+_VOICED = re.compile(r"voiced=(\d+)/(\d+)")
+_NOISE = re.compile(r"noise=(\d+)")
+_LOUD = re.compile(r"rms_p90=(\d+)")
+
+
+def how_it_was_said(measured: str) -> str:
+    """Describe an utterance acoustically, for a gate that only reads text.
+
+    A mangled question addressed to Andy and a sentence from a television read
+    the same on the page, and the gate was binning real questions as room
+    noise. They do not sound the same: someone talking to Andy is voiced almost
+    continuously and close to him, while a television across the room arrives
+    in fragments well down toward the floor it sits in. Measured on one such
+    exchange, the person ran 66% voiced at RMS 546 and the television 9% to 29%
+    at 305 to 508.
+
+    This is a hint and deliberately not a rule. It says how the room sounded,
+    and the gate still decides.
+    """
+    voiced = _VOICED.search(measured)
+    noise = _NOISE.search(measured)
+    loud = _LOUD.search(measured)
+    if voiced is None or int(voiced.group(2)) == 0:
+        return ""
+    fraction = int(voiced.group(1)) / int(voiced.group(2))
+    above = None
+    if noise is not None and loud is not None and int(noise.group(1)) > 0:
+        above = int(loud.group(1)) / int(noise.group(1))
+
+    if fraction >= 0.5 and (above is None or above >= 1.5):
+        return (
+            "This was said almost continuously and close to Andy, which is how "
+            "someone speaking to him sounds rather than a television."
+        )
+    if fraction < 0.25:
+        return (
+            "This arrived in fragments and mostly near the level of the room, "
+            "which is how a television or a distant conversation sounds."
+        )
+    return "This was neither close and continuous nor plainly distant."
+
+
 def _pcm16_metrics(data: bytes) -> tuple[float, int, int]:
     samples = array("h")
     samples.frombytes(data[: len(data) - (len(data) % 2)])
@@ -104,6 +146,13 @@ approximate an unsupported angle, invent servo values or motion names, or combin
 motions. For an unsupported angle, reply with the supported calibrated choice and
 do not select a motion. A motion acknowledgement states what Andy will do; it is
 not a question. Replies must be one or two concise sentences suitable for speech.
+
+Each transcript may carry a note about how it sounded, measured rather than
+guessed. Speech that was continuous and close is almost always someone talking
+to Andy, even when the words came out mangled; speech that arrived in fragments
+near the level of the room is usually a television. Weigh it with the words:
+Andy has ignored real questions that the recogniser mangled, and answering
+briefly is a smaller failure than sitting silent when someone asked.
 
 Deciding whether speech is for Andy:
 - Transcripts come from an imperfect recogniser in a real room. Judge intent
@@ -430,6 +479,7 @@ class TurnCoordinator:
                 self._history[-self._history_turns * 2 :]
                 if self._history_turns
                 else [],
+                heard=how_it_was_said(measured),
             )
             if self._actions is not None:
                 decision = self._actions.authorize(decision, combined_transcript)
@@ -673,7 +723,10 @@ class TurnCoordinator:
         )
 
     async def _gate_decision(
-        self, transcript: str, history: list[dict[str, str]]
+        self,
+        transcript: str,
+        history: list[dict[str, str]],
+        heard: str = "",
     ) -> ActionDecision:
         """Decide what to do with a sentence: the router first, then the gate.
 
@@ -698,7 +751,16 @@ class TurnCoordinator:
             {"role": "system", "content": self._agent_system_prompt()}
         ]
         messages.extend(history)
-        messages.append({"role": "user", "content": transcript})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"{transcript}\n\n[how it sounded: {heard}]"
+                    if heard
+                    else transcript
+                ),
+            }
+        )
         return await self._request_agent_decision(messages)
 
     async def consider(self, transcript: str) -> ActionDecision:

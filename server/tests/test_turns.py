@@ -1089,3 +1089,62 @@ async def test_the_gate_can_sense_what_the_agent_can_sense() -> None:
     assert "Sharjah" in system
     assert "rather than saying you do not know" in system
     await coordinator.close()
+
+
+def test_how_it_was_said_separates_a_person_from_a_television() -> None:
+    """The gate reads text; a person and a television read the same.
+
+    Measured on one real exchange: the person ran 66% voiced at RMS 546 while
+    the television ran 9% to 29% at 305 to 508. Andy ignored the person's
+    question because the recogniser had mangled it and nothing else
+    distinguished them.
+    """
+    from andy.turns import how_it_was_said
+
+    person = (
+        "vad=silero speech_p50=0.98 voiced=91/137 noise=339 rms_p90=898"
+    )
+    television = (
+        "vad=silero speech_p50=0.00 voiced=21/238 noise=329 rms_p90=375"
+    )
+
+    assert "close to Andy" in how_it_was_said(person)
+    assert "television" in how_it_was_said(television)
+    assert "fragments" in how_it_was_said(television)
+
+
+def test_how_it_was_said_says_nothing_when_it_cannot_tell() -> None:
+    from andy.turns import how_it_was_said
+
+    assert how_it_was_said("vad=off") == ""
+    assert how_it_was_said("voiced=0/0") == ""
+    middling = "voiced=50/140 noise=300 rms_p90=380"
+    assert "neither" in how_it_was_said(middling)
+
+
+@pytest.mark.asyncio
+async def test_the_gate_is_told_how_the_utterance_sounded() -> None:
+    llm = LLM({"kind": "reply", "reply": "Sure.", "motion": None})
+
+    class Loud(Detector):
+        capture_summary = (
+            "vad=silero speech_p50=0.98 voiced=91/137 noise=339 rms_p90=898"
+        )
+
+    coordinator, sink, asr, _, tts, output = make_coordinator(
+        [(VADDecision.SPEECH_STARTED,), (VADDecision.SPEECH_ENDED,)],
+        llm=llm,
+        actions=Actions(),
+    )
+    coordinator._detector_factory = lambda: Loud(
+        [(VADDecision.SPEECH_STARTED,), (VADDecision.SPEECH_ENDED,)]
+    )
+    await coordinator.on_start()
+    await coordinator.on_audio(b"speech")
+    await coordinator.on_audio(b"silence")
+    await coordinator.wait_until_idle()
+
+    asked = llm.requests[0][-1]["content"]
+    assert "how it sounded" in asked
+    assert "close to Andy" in asked
+    await coordinator.close()
