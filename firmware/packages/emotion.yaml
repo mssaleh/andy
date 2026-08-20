@@ -28,147 +28,183 @@ esphome:
             priority: 0
 
 image:
-  - file: faces/face_00.png
+  - platform: file
+    file: faces/face_00.png
     id: face_00
     type: BINARY
     resize: 220x220
-  - file: faces/face_01.png
+  - platform: file
+    file: faces/face_01.png
     id: face_01
     type: BINARY
     resize: 220x220
-  - file: faces/face_02.png
+  - platform: file
+    file: faces/face_02.png
     id: face_02
     type: BINARY
     resize: 220x220
-  - file: faces/face_03.png
+  - platform: file
+    file: faces/face_03.png
     id: face_03
     type: BINARY
     resize: 220x220
-  - file: faces/face_04.png
+  - platform: file
+    file: faces/face_04.png
     id: face_04
     type: BINARY
     resize: 220x220
-  - file: faces/face_05.png
+  - platform: file
+    file: faces/face_05.png
     id: face_05
     type: BINARY
     resize: 220x220
-  - file: faces/face_06.png
+  - platform: file
+    file: faces/face_06.png
     id: face_06
     type: BINARY
     resize: 220x220
-  - file: faces/face_07.png
+  - platform: file
+    file: faces/face_07.png
     id: face_07
     type: BINARY
     resize: 220x220
-  - file: faces/face_08.png
+  - platform: file
+    file: faces/face_08.png
     id: face_08
     type: BINARY
     resize: 220x220
-  - file: faces/face_09.png
+  - platform: file
+    file: faces/face_09.png
     id: face_09
     type: BINARY
     resize: 220x220
-  - file: faces/face_10.png
+  - platform: file
+    file: faces/face_10.png
     id: face_10
     type: BINARY
     resize: 220x220
-  - file: faces/face_11.png
+  - platform: file
+    file: faces/face_11.png
     id: face_11
     type: BINARY
     resize: 220x220
-  - file: faces/face_12.png
+  - platform: file
+    file: faces/face_12.png
     id: face_12
     type: BINARY
     resize: 220x220
-  - file: faces/face_13.png
+  - platform: file
+    file: faces/face_13.png
     id: face_13
     type: BINARY
     resize: 220x220
-  - file: faces/face_14.png
+  - platform: file
+    file: faces/face_14.png
     id: face_14
     type: BINARY
     resize: 220x220
-  - file: faces/face_15.png
+  - platform: file
+    file: faces/face_15.png
     id: face_15
     type: BINARY
     resize: 220x220
-  - file: faces/face_16.png
+  - platform: file
+    file: faces/face_16.png
     id: face_16
     type: BINARY
     resize: 220x220
-  - file: faces/face_17.png
+  - platform: file
+    file: faces/face_17.png
     id: face_17
     type: BINARY
     resize: 220x220
-  - file: faces/face_18.png
+  - platform: file
+    file: faces/face_18.png
     id: face_18
     type: BINARY
     resize: 220x220
-  - file: faces/face_19.png
+  - platform: file
+    file: faces/face_19.png
     id: face_19
     type: BINARY
     resize: 220x220
-  - file: faces/face_20.png
+  - platform: file
+    file: faces/face_20.png
     id: face_20
     type: BINARY
     resize: 220x220
-  - file: faces/face_21.png
+  - platform: file
+    file: faces/face_21.png
     id: face_21
     type: BINARY
     resize: 220x220
-  - file: faces/face_22.png
+  - platform: file
+    file: faces/face_22.png
     id: face_22
     type: BINARY
     resize: 220x220
-  - file: faces/face_23.png
+  - platform: file
+    file: faces/face_23.png
     id: face_23
     type: BINARY
     resize: 220x220
-  - file: faces/face_24.png
+  - platform: file
+    file: faces/face_24.png
     id: face_24
     type: BINARY
     resize: 220x220
-  - file: faces/face_25.png
+  - platform: file
+    file: faces/face_25.png
     id: face_25
     type: BINARY
     resize: 220x220
-  - file: faces/face_26.png
+  - platform: file
+    file: faces/face_26.png
     id: face_26
     type: BINARY
     resize: 220x220
-  - file: faces/face_27.png
+  - platform: file
+    file: faces/face_27.png
     id: face_27
     type: BINARY
     resize: 220x220
-  - file: faces/face_28.png
+  - platform: file
+    file: faces/face_28.png
     id: face_28
     type: BINARY
     resize: 220x220
-  - file: faces/face_29.png
+  - platform: file
+    file: faces/face_29.png
     id: face_29
     type: BINARY
     resize: 220x220
-  - file: faces/face_30.png
+  - platform: file
+    file: faces/face_30.png
     id: face_30
     type: BINARY
     resize: 220x220
-  - file: faces/face_31.png
+  - platform: file
+    file: faces/face_31.png
     id: face_31
     type: BINARY
     resize: 220x220
-  - file: faces/face_32.png
+  - platform: file
+    file: faces/face_32.png
     id: face_32
     type: BINARY
     resize: 220x220
-  - file: faces/face_33.png
+  - platform: file
+    file: faces/face_33.png
     id: face_33
     type: BINARY
     resize: 220x220
-  - file: faces/face_34.png
+  - platform: file
+    file: faces/face_34.png
     id: face_34
     type: BINARY
     resize: 220x220
-  - file: faces/face_35.png
+  - platform: file
+    file: faces/face_35.png
     id: face_35
     type: BINARY
     resize: 220x220

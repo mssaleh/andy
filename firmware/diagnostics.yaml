@@ -20,6 +20,7 @@ substitutions:
 
 packages:
   board: !include packages/board.yaml
+  network: !include packages/network.yaml
   power: !include packages/power.yaml
   audio: !include packages/audio.yaml
   emotion: !include packages/emotion.yaml
