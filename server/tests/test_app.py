@@ -76,3 +76,98 @@ async def test_converse_reports_the_movement_it_chose_without_running_it() -> No
     )
     assert moved["moved"] is True
     assert actions.executed == [MotionAction.LOOK_LEFT]
+
+
+@pytest.mark.asyncio
+async def test_converse_can_go_the_way_a_heard_sentence_goes() -> None:
+    """The gate is reachable without a voice in the room.
+
+    A direct call to the agent skips the router and the gate, which is the half
+    of the system that answers for Andy on every turn it does not hand over --
+    and the half that was found answering without knowing anything he can
+    sense. It needs a way in from the control API or it stays untested.
+    """
+    from andy.actions import ActionDecision, DecisionKind, MotionAction
+    from andy.agent import AgentTurn
+    from andy.app import ConverseRequest, app, converse
+
+    class Coordinator:
+        def __init__(self, decision: ActionDecision) -> None:
+            self._decision = decision
+            self.considered: list[str] = []
+
+        async def consider(self, text: str) -> ActionDecision:
+            self.considered.append(text)
+            return self._decision
+
+    class Conversation:
+        def __init__(self) -> None:
+            self.runs = 0
+
+        async def reply(self, text: str, history: list) -> AgentTurn:
+            self.runs += 1
+            return AgentTurn(speech="agent answer", movement=None)
+
+        def snapshot(self) -> dict:
+            return {"runs": self.runs}
+
+    conversation = Conversation()
+    app.state.conversation = conversation
+    app.state.arbiter = None
+    app.state.actions = None
+
+    # A movement the gate keeps: the agent must not be run at all.
+    app.state.coordinator = Coordinator(
+        ActionDecision(
+            kind=DecisionKind.MOTION,
+            action=MotionAction.LOOK_LEFT,
+            reply="Looking left.",
+        )
+    )
+    body = await converse(
+        ConverseRequest(
+            text="look left", speak=False, move=False, via_gate=True
+        )
+    )
+    assert body["gate"]["kind"] == "motion"
+    assert body["movement"] == "look_left"
+    assert body["reply"] == "Looking left."
+    assert conversation.runs == 0, "the gate kept this turn"
+
+    # A conversation the gate hands over: the agent answers, and the gate's
+    # own decision is reported alongside so both halves are visible.
+    app.state.coordinator = Coordinator(
+        ActionDecision(kind=DecisionKind.CHAT, reply="gate fallback")
+    )
+    body = await converse(
+        ConverseRequest(
+            text="how are you", speak=False, move=False, via_gate=True
+        )
+    )
+    assert body["gate"]["kind"] == "chat"
+    assert body["reply"] == "agent answer"
+    assert conversation.runs == 1
+
+
+@pytest.mark.asyncio
+async def test_converse_without_the_gate_still_calls_the_agent_directly() -> None:
+    from andy.agent import AgentTurn
+    from andy.app import ConverseRequest, app, converse
+
+    class Conversation:
+        async def reply(self, text: str, history: list) -> AgentTurn:
+            return AgentTurn(speech="direct", movement=None)
+
+        def snapshot(self) -> dict:
+            return {}
+
+    app.state.conversation = Conversation()
+    app.state.arbiter = None
+    app.state.actions = None
+    app.state.coordinator = None
+
+    body = await converse(
+        ConverseRequest(text="hello", speak=False, move=False)
+    )
+    assert body["reply"] == "direct"
+    assert body["gate"] is None

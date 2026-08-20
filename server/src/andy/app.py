@@ -208,6 +208,7 @@ async def lifespan(app: FastAPI):
     app.state.tts = tts
     app.state.config = config
     app.state.bridge = bridge
+    app.state.coordinator = coordinator if config.device_enabled else None
     app.state.actions = actions
     app.state.device = device
     app.state.speaker = speaker
@@ -444,6 +445,11 @@ class ConverseRequest(BaseModel):
     #: here is opt-in. With it off the whole reasoning path still runs and the
     #: movement the agent chose is reported without being performed.
     move: bool = True
+    #: Go in the way a spoken sentence does: through the router and the gate
+    #: first, and only then to the agent if the gate hands it over. Off, this
+    #: calls the agent directly, which is the shorter path and skips the half
+    #: of the system that answers for Andy when the agent is not run.
+    via_gate: bool = False
 
 
 @app.post("/say")
@@ -509,14 +515,65 @@ async def run_motion(request: MotionRequestModel) -> dict[str, object]:
 async def converse(request: ConverseRequest) -> dict[str, object]:
     """Put a sentence to Andy as though it had been heard, and get his reply.
 
-    The whole server path runs: the agent reasons, calls tools, and the reply is
-    spoken unless asked otherwise. This exists so the agent can be exercised
-    without a voice in the room, which is exactly what integration testing and a
-    silent room both need.
+    With `via_gate` this goes the way a heard sentence goes: the calibrated
+    router first, then the gate, and on to the agent only if the gate hands it
+    over. Without it the agent is called directly, which is shorter but skips
+    the half of the system that answers for Andy when the agent is not run --
+    and that half was found answering blind, so it needs a way in from here.
+
+    The reply is spoken and the movement performed unless asked otherwise, so
+    the whole path can be exercised with no voice in the room, which is what
+    integration testing and a silent room both need.
     """
     conversation = app.state.conversation
     if conversation is None:
         raise HTTPException(status_code=503, detail="the agent is disabled")
+
+    gate: dict[str, object] | None = None
+    if request.via_gate:
+        coordinator = getattr(app.state, "coordinator", None)
+        if coordinator is None:
+            raise HTTPException(
+                status_code=503, detail="the turn coordinator is not running"
+            )
+        decision = await coordinator.consider(request.text)
+        gate = {
+            "kind": decision.kind.value,
+            "motion": (
+                decision.action.value if decision.action is not None else None
+            ),
+            "reply": decision.reply,
+        }
+        if decision.kind is not DecisionKind.CHAT:
+            # The gate keeps this one. That is the half of the system a direct
+            # call to the agent never exercises, and the half that was found
+            # answering for Andy without knowing anything he can sense.
+            spoken = False
+            reply = (decision.reply or "").strip()
+            if request.speak and app.state.arbiter is not None and reply:
+                from .arbiter import Priority
+
+                spoken = await app.state.arbiter.say(reply, Priority.REPLY)
+            moved = False
+            if (
+                decision.kind is DecisionKind.MOTION
+                and decision.action is not None
+                and request.move
+                and app.state.actions is not None
+            ):
+                authorized = app.state.actions.authorize(decision, request.text)
+                if authorized.kind is DecisionKind.MOTION:
+                    await app.state.actions.execute(authorized.action)
+                    moved = True
+            return {
+                "reply": reply,
+                "spoken": spoken,
+                "movement": gate["motion"],
+                "moved": moved,
+                "gate": gate,
+                "agent": conversation.snapshot(),
+            }
+
     turn = await conversation.reply(request.text, [])
     spoken = False
     if request.speak and app.state.arbiter is not None and turn.speech:
@@ -540,6 +597,7 @@ async def converse(request: ConverseRequest) -> dict[str, object]:
         "spoken": spoken,
         "movement": movement.value if movement is not None else None,
         "moved": moved,
+        "gate": gate,
         "agent": conversation.snapshot(),
     }
 

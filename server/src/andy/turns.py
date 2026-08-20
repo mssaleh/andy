@@ -425,30 +425,12 @@ class TurnCoordinator:
                 log.info("discarded overlong pending transcript")
                 return
 
-            decision = (
-                resolve_calibrated_request(combined_transcript)
-                if self._actions is not None
-                else None
+            decision = await self._gate_decision(
+                combined_transcript,
+                self._history[-self._history_turns * 2 :]
+                if self._history_turns
+                else [],
             )
-            if decision is None:
-                messages = [
-                    {
-                        "role": "system",
-                        "content": self._agent_system_prompt(),
-                    }
-                ]
-                if self._history_turns:
-                    messages.extend(self._history[-self._history_turns * 2 :])
-                messages.append(
-                    {"role": "user", "content": combined_transcript}
-                )
-                decision = await self._request_agent_decision(messages)
-            else:
-                log.info(
-                    "deterministic calibrated request resolved: kind=%s action=%s",
-                    decision.kind,
-                    decision.action,
-                )
             if self._actions is not None:
                 decision = self._actions.authorize(decision, combined_transcript)
             if decision.kind is DecisionKind.IGNORE:
@@ -689,6 +671,47 @@ class TurnCoordinator:
         return "What Andy can do, beyond moving and speaking:\n" + "\n".join(
             f"- {item}" for item in able
         )
+
+    async def _gate_decision(
+        self, transcript: str, history: list[dict[str, str]]
+    ) -> ActionDecision:
+        """Decide what to do with a sentence: the router first, then the gate.
+
+        One path, used by a heard utterance and by the control API alike. The
+        gate is where a real defect lived -- it answers for Andy on every turn
+        it does not hand over, and it was answering blind -- so a second copy
+        of this for testing would be a copy that does not have the bug.
+        """
+        decision = (
+            resolve_calibrated_request(transcript)
+            if self._actions is not None
+            else None
+        )
+        if decision is not None:
+            log.info(
+                "deterministic calibrated request resolved: kind=%s action=%s",
+                decision.kind,
+                decision.action,
+            )
+            return decision
+        messages = [
+            {"role": "system", "content": self._agent_system_prompt()}
+        ]
+        messages.extend(history)
+        messages.append({"role": "user", "content": transcript})
+        return await self._request_agent_decision(messages)
+
+    async def consider(self, transcript: str) -> ActionDecision:
+        """What Andy would make of a sentence, with no voice in the room.
+
+        The same router and the same gate a spoken sentence meets, on the same
+        prompt, without the audio around it. Nothing is authorised, spoken or
+        moved here: the caller decides whether to act on what comes back.
+        """
+        text = speech_only(transcript)
+        if not text:
+            return ActionDecision(kind=DecisionKind.IGNORE)
+        return await self._gate_decision(text, [])
 
     async def _request_agent_decision(
         self, messages: list[dict[str, str]]
