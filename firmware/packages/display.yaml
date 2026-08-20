@@ -1,0 +1,124 @@
+# The LCD backlight and Andy's face.
+#
+# The face is the emotion. `emotion_profiles.h` supplies the mask and the two
+# colours, and this package only draws them, so a new mood is a table row rather
+# than new drawing code. The masks carry shape alone, which is what lets 36
+# faces cost 218 KB and lets intensity drive brightness at runtime.
+#
+# Device state is deliberately not an emotion. Muted and disconnected are
+# painted as small corner marks on top of whatever Andy is feeling, so they stay
+# unambiguous instead of competing with expression.
+
+globals:
+  # Set by the shake reflex in `imu.yaml`. The face is redrawn on demand, so the
+  # reflex forces an update when it starts and when it expires.
+  - id: face_dizzy_until_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+esphome:
+  on_boot:
+    - priority: 600
+      then:
+        - light.turn_on:
+            id: lcd_backlight
+            brightness: 80%
+    - priority: -200
+      then:
+        - component.update: andy_display
+
+spi:
+  - id: display_spi
+    clk_pin: GPIO36
+    mosi_pin: GPIO37
+
+output:
+  - platform: axp2101
+    id: lcd_backlight_output
+    type: range
+    channel: DLDO1
+    min_voltage: 2600
+    max_voltage: 3300
+
+light:
+  - platform: monochromatic
+    id: lcd_backlight
+    name: LCD backlight
+    output: lcd_backlight_output
+    restore_mode: RESTORE_DEFAULT_ON
+    default_transition_length: 250ms
+
+display:
+  - platform: mipi_spi
+    id: andy_display
+    model: M5CORE
+    spi_id: display_spi
+    dc_pin: GPIO35
+    reset_pin:
+      aw9523b_id: aw9523b_hub
+      number: 9
+    cs_pin:
+      number: GPIO3
+      ignore_strapping_warning: true
+    data_rate: 40MHz
+    invert_colors: true
+    update_interval: never
+    lambda: |-
+      static esphome::image::Image *const FACES[] = {id(face_00), id(face_01), id(face_02), id(face_03), id(face_04), id(face_05), id(face_06), id(face_07), id(face_08), id(face_09), id(face_10), id(face_11), id(face_12), id(face_13), id(face_14), id(face_15), id(face_16), id(face_17), id(face_18), id(face_19), id(face_20), id(face_21), id(face_22), id(face_23), id(face_24), id(face_25), id(face_26), id(face_27), id(face_28), id(face_29), id(face_30), id(face_31), id(face_32), id(face_33), id(face_34), id(face_35)};
+
+      const std::string state = id(voice_state).state;
+      const bool disconnected = state.find("disconnected") != std::string::npos;
+      const bool muted = state == "muted";
+      const bool dizzy = (int32_t)(millis() - id(face_dizzy_until_ms)) < 0;
+
+      if (dizzy) {
+        // Spiral eyes and a wavy mouth: Andy has been picked up and shaken.
+        it.fill(Color(30, 12, 40));
+        const Color giddy(255, 190, 90);
+        for (int eye = 0; eye < 2; eye++) {
+          const int cx = eye == 0 ? 96 : 224;
+          for (int r = 6; r <= 30; r += 6) {
+            it.circle(cx, 98, r, giddy);
+          }
+        }
+        for (int x = 124; x < 196; x += 8) {
+          it.line(x, 176 + ((x / 8) % 2 ? -7 : 7),
+                  x + 8, 176 + ((x / 8) % 2 ? 7 : -7), giddy);
+        }
+        return;
+      }
+
+      const auto &profile = andy::EMOTIONS[id(emotion_index)];
+      // Intensity drives brightness, so the same mood reads as a murmur or a
+      // shout without needing a second mask.
+      const float lit = 0.45f + 0.55f * (id(emotion_intensity) / 100.0f);
+      const Color screen(
+          (uint8_t)(profile.screen.r * lit),
+          (uint8_t)(profile.screen.g * lit),
+          (uint8_t)(profile.screen.b * lit));
+      const Color ink(profile.feature.r, profile.feature.g, profile.feature.b);
+
+      it.fill(screen);
+      it.image(50, 10, FACES[profile.mask], ink, screen);
+
+      if (disconnected) {
+        // No server: a red bar along the bottom edge.
+        it.filled_rectangle(0, 232, 320, 8, Color(220, 60, 60));
+      }
+      if (muted) {
+        // Microphone off: a crossed circle in the top-left corner.
+        const Color off(230, 230, 235);
+        it.circle(22, 22, 13, off);
+        it.line(13, 13, 31, 31, off);
+      }
+      if (id(camera_mark_shown)) {
+        // The camera just sent a picture: a filled eye in the top-right
+        // corner. Device state is not an emotion, so like muted and
+        // disconnected this is painted over whatever Andy is feeling rather
+        // than replacing it. A camera on someone's desk that photographs the
+        // room without saying so is not something to ship.
+        const Color lens(120, 220, 255);
+        it.filled_circle(298, 22, 7, lens);
+        it.circle(298, 22, 12, Color(245, 250, 255));
+      }

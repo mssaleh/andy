@@ -1,0 +1,133 @@
+# Inertial sensing and the shake reflex.
+#
+# `MotionComponent` is a `PollingComponent`, so the I2C read rate is set here
+# rather than by the hardware output rate. The factory firmware's `hal_imu.cpp`
+# detects shake from a 100 ms task, so 10 Hz is proven sufficient on this unit
+# and costs one burst read per 100 ms.
+#
+# Being picked up and shaken is a physical-safety event, so the reflex is local:
+# it cuts motion through the firmware emergency stop without waiting for a
+# network round trip, which the 243 ms tunnel makes unacceptable for this.
+# Emergency stop deliberately does not latch `motion_inhibited`, so Andy
+# recovers on its own once it is put down.
+
+esphome:
+  on_boot:
+    - priority: -200
+      then:
+        - binary_sensor.template.publish:
+            id: shake_detected
+            state: false
+
+motion:
+  - platform: bmi270
+    id: andy_imu
+    i2c_id: bus_internal
+    address: 0x69
+    update_interval: 100ms
+    accelerometer_range: 4G
+    accelerometer_odr: 100HZ
+    gyroscope_range: 2000DPS
+    gyroscope_odr: 200HZ
+
+globals:
+  - id: shake_confirmations
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: shake_cooldown_until_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+sensor:
+  - platform: motion
+    motion_id: andy_imu
+    type: acceleration_x
+    id: accel_x
+    name: Acceleration X
+    filters: [{delta: 0.05}]
+  - platform: motion
+    motion_id: andy_imu
+    type: acceleration_y
+    id: accel_y
+    name: Acceleration Y
+    filters: [{delta: 0.05}]
+  - platform: motion
+    motion_id: andy_imu
+    type: acceleration_z
+    id: accel_z
+    name: Acceleration Z
+    filters: [{delta: 0.05}]
+  - platform: motion
+    motion_id: andy_imu
+    type: angular_rate_x
+    id: gyro_x
+    name: Angular rate X
+    filters: [{delta: 2.0}]
+  - platform: motion
+    motion_id: andy_imu
+    type: angular_rate_y
+    id: gyro_y
+    name: Angular rate Y
+    filters: [{delta: 2.0}]
+  - platform: motion
+    motion_id: andy_imu
+    type: angular_rate_z
+    id: gyro_z
+    name: Angular rate Z
+    filters: [{delta: 2.0}]
+
+binary_sensor:
+  - platform: template
+    id: shake_detected
+    name: Shake detected
+    device_class: vibration
+
+script:
+  - id: clear_shake_state
+    mode: restart
+    then:
+      - delay: 3s
+      - lambda: |-
+          if (id(shake_detected).state) {
+            id(shake_detected).publish_state(false);
+            id(andy_display).update();
+          }
+
+interval:
+  # Samples the axes the IMU published on its own 100 ms poll. At rest the
+  # magnitude is 1 g; a deliberate shake nearly doubles or cancels apparent
+  # gravity, so 0.8 g of deviation held across two samples separates a shake
+  # from a desk bump.
+  - interval: 100ms
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          if ((int32_t)(now - id(shake_cooldown_until_ms)) < 0) {
+            return;
+          }
+          const float x = id(accel_x).state;
+          const float y = id(accel_y).state;
+          const float z = id(accel_z).state;
+          if (std::isnan(x) || std::isnan(y) || std::isnan(z)) {
+            return;
+          }
+          const float magnitude = std::sqrt(x * x + y * y + z * z);
+          if (std::fabs(magnitude - 1.0f) <= 0.8f) {
+            id(shake_confirmations) = 0;
+            return;
+          }
+          if (++id(shake_confirmations) < 2) {
+            return;
+          }
+          id(shake_confirmations) = 0;
+          id(shake_cooldown_until_ms) = now + 3000;
+          id(shake_detected).publish_state(true);
+          id(face_dizzy_until_ms) = now + 3000;
+          ESP_LOGW("andy.shake", "Shake detected at %.2f g; stopping motion",
+                   magnitude);
+          id(motion_emergency_stop_button).press();
+          id(set_emotion)->execute(andy::E_OVERWHELMED, 100, 6, andy::P_SAFETY);
+          id(andy_display).update();
+          id(clear_shake_state).execute();

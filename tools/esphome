@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+export XDG_CACHE_HOME="${project_root}/.cache"
+export PLATFORMIO_CORE_DIR="${project_root}/.platformio"
+# Repository-local ESP-IDF framework trees are source archives, not Git
+# checkouts. Do not let their version probe climb into Andy's own repository;
+# this also keeps clean builds valid before the repository has its first commit.
+export GIT_CEILING_DIRECTORIES="${project_root}"
+
+exec "${project_root}/tools/uv" run \
+  --project "${project_root}/firmware" \
+  esphome "$@"

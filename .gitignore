@@ -1,0 +1,54 @@
+# Secrets and credentials. Patterns are path-independent so a secrets file
+# added under a new directory is still caught.
+.env
+*.env
+secrets.yaml
+*.pem
+*.key
+*.p12
+id_rsa*
+!*.env.example
+!secrets.example.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+*.egg-info/
+
+# uv
+.uv-cache/
+.uv-python/
+
+# Build output and toolchain caches
+.cache/
+.platformio/
+.esphome/
+
+# This installation's real addresses, identity and paths. The published
+# templates are docs/site.example.md and tools/site.env.example.
+docs/site.md
+tools/site.env
+
+# Working plans. Kept on disk, not published: they record intent and what is
+# still unbuilt, which is for us rather than for a reader of the code.
+docs/*-plan.md
+
+# Agent working directories
+.agents/
+.codex/
+.claude/
+
+# Editor and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*~

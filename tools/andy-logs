@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/andy-lab-common.sh
+source "${script_dir}/andy-lab-common.sh"
+
+if (($# > 1)); then
+  printf 'Usage: %s [firmware-config.yaml]\n' "$0" >&2
+  exit 2
+fi
+
+if [[ ! "$ANDY_DEVICE_HOST" =~ ^([0-9]{1,3}[.]){3}[0-9]{1,3}$ ]]; then
+  printf 'ANDY_DEVICE_HOST must be an IPv4 address; serial devices are forbidden.\n' >&2
+  exit 1
+fi
+
+firmware_config="${1:-$ANDY_FIRMWARE_CONFIG}"
+if [[ "$firmware_config" != /* ]]; then
+  firmware_config="${ANDY_PROJECT_ROOT}/${firmware_config}"
+fi
+if [[ ! -f "$firmware_config" ]]; then
+  printf 'Firmware config is unavailable: %s\n' "$firmware_config" >&2
+  exit 1
+fi
+
+exec "${ANDY_PROJECT_ROOT}/tools/esphome" \
+  logs "$firmware_config" \
+  --device "$ANDY_DEVICE_HOST"

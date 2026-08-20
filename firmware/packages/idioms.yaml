@@ -1,0 +1,203 @@
+# Motion idioms: the body half of an emotion.
+#
+# `motion.yaml` still owns safety and is not relaxed here. Every pose runs its
+# torque-state establishment, telemetry guards, 25 ms supervisor, tracking
+# verification and fault latching, and every target is validated against the
+# measured envelope. What a program changes is that the rail is energised once
+# for the whole sequence instead of once per pose, so an idiom reads as one
+# movement rather than a series of restarts.
+#
+# The choreography itself lives in `emotion_profiles.h` as keyframe tables, so a
+# new idiom is data rather than code, and one generic runner walks any of them.
+
+globals:
+  - id: named_program_index
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: idiom_running
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: idiom_current
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: idiom_intensity
+    type: int
+    restore_value: false
+    initial_value: "70"
+
+script:
+  # One keyframe. Hands the target to the safety layer and waits for the
+  # supervisor to finish with it. If anything latched, this returns immediately
+  # so the rest of the sequence unwinds instead of pushing a faulted robot.
+  - id: idiom_pose
+    mode: single
+    parameters:
+      yaw: int
+      pitch: int
+      speed: int
+      settle: int
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return !id(motion_inhibited) && id(motion_program_active) &&
+                     !id(motion_active);
+          then:
+            - lambda: |-
+                id(motion_target_yaw_steps) = yaw;
+                id(motion_target_pitch_steps) = pitch;
+                id(motion_speed) = speed;
+            - script.execute: start_fixed_motion
+            - wait_until:
+                condition:
+                  lambda: return id(motion_active);
+                timeout: 3s
+            - wait_until:
+                condition:
+                  lambda: return !id(motion_active);
+                timeout: 12s
+            - delay: !lambda "return settle;"
+
+  # Walks the keyframe table for one idiom. Refuses to start unless the robot is
+  # idle, unlatched and not already in a program.
+  - id: run_idiom
+    mode: single
+    parameters:
+      idiom: int
+      intensity: int
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return idiom > andy::IDIOM_STILL &&
+                     idiom < (int) (sizeof(andy::IDIOM_PROGRAMS) /
+                                    sizeof(andy::IdiomProgram)) &&
+                     !id(motion_active) && !id(motion_inhibited) &&
+                     !id(motion_program_active) && !id(idiom_running);
+          then:
+            # Claim the mechanism first. The settle below takes 1.5 s, and until
+            # the flag is up the server sees an idle robot and is free to start
+            # a named program of its own onto the same servos.
+            - lambda: |-
+                id(idiom_current) = idiom;
+                id(idiom_intensity) = intensity;
+                id(idiom_running) = true;
+                // The deadline must be set with the flag, not after the settle
+                // below. The watchdog only looks at these two together, and a
+                // live flag carrying a stale deadline reads as a program that
+                // has already overrun.
+                id(motion_program_until_ms) = millis() + 25000;
+                id(motion_program_active) = true;
+            # The program owns the rail, so the program pays the settle. Poses
+            # inside it then legitimately take the short one; a cold rail cannot
+            # verify torque in 60 ms and would fault before the first frame.
+            - switch.turn_on: servo_power
+            - delay: 1500ms
+            - lambda: |-
+                ESP_LOGI("andy.idiom", "Idiom %d at intensity %d (%d frames)",
+                         idiom, intensity,
+                         andy::IDIOM_PROGRAMS[idiom].count);
+            - repeat:
+                count: !lambda "return andy::IDIOM_PROGRAMS[id(idiom_current)].count;"
+                then:
+                  - script.execute:
+                      id: idiom_pose
+                      yaw: !lambda "return andy::IDIOM_PROGRAMS[id(idiom_current)].frames[iteration].yaw;"
+                      pitch: !lambda "return andy::IDIOM_PROGRAMS[id(idiom_current)].frames[iteration].pitch;"
+                      speed: !lambda "return andy::scaled_speed(andy::IDIOM_PROGRAMS[id(idiom_current)].frames[iteration].speed, id(idiom_intensity));"
+                      settle: !lambda "return andy::IDIOM_PROGRAMS[id(idiom_current)].frames[iteration].settle_ms;"
+                  - script.wait: idiom_pose
+            - script.execute: end_motion_program
+            - lambda: |-
+                id(idiom_running) = false;
+                ESP_LOGI("andy.idiom", "Idiom %d finished", id(idiom_current));
+
+  - id: run_named_program
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return !id(motion_active) && !id(motion_inhibited) &&
+                     !id(motion_program_active) && !id(idiom_running);
+          then:
+            - lambda: |-
+                const auto slot = id(motion_program_select).active_index();
+                id(named_program_index) =
+                    slot.has_value() ? (int) slot.value() : 0;
+                id(idiom_running) = true;
+                id(motion_program_until_ms) = millis() + 30000;
+                id(motion_program_active) = true;
+            - switch.turn_on: servo_power
+            - delay: 1500ms
+            - lambda: |-
+                ESP_LOGI("andy.program", "Program %s (%d frames)",
+                         andy::MOTION_PROGRAMS[id(named_program_index)].name,
+                         andy::MOTION_PROGRAMS[id(named_program_index)].count);
+            - repeat:
+                count: !lambda "return andy::MOTION_PROGRAMS[id(named_program_index)].count;"
+                then:
+                  - script.execute:
+                      id: idiom_pose
+                      yaw: !lambda "return andy::MOTION_PROGRAMS[id(named_program_index)].frames[iteration].yaw;"
+                      pitch: !lambda "return andy::MOTION_PROGRAMS[id(named_program_index)].frames[iteration].pitch;"
+                      speed: !lambda "return andy::MOTION_PROGRAMS[id(named_program_index)].frames[iteration].speed;"
+                      settle: !lambda "return andy::MOTION_PROGRAMS[id(named_program_index)].frames[iteration].settle_ms;"
+                  - script.wait: idiom_pose
+            - script.execute: end_motion_program
+            - lambda: |-
+                id(idiom_running) = false;
+                ESP_LOGI("andy.program", "Program %s finished",
+                         andy::MOTION_PROGRAMS[id(named_program_index)].name);
+
+button:
+  # Replays whatever Andy is feeling, through the body. Useful from the API and
+  # the only way to ask for motion without changing the mood.
+  - platform: template
+    id: emotion_express_button
+    name: Emotion express
+    on_press:
+      - script.execute:
+          id: run_idiom
+          idiom: !lambda "return andy::EMOTIONS[id(emotion_index)].idiom;"
+          intensity: !lambda "return id(emotion_intensity);"
+
+  - platform: template
+    id: run_motion_program_button
+    name: Run motion program
+    on_press:
+      - script.execute: run_named_program
+
+# The named motion catalog, run as one program.
+#
+# The server used to press a pose button per step and pay the 1.5 s rail settle
+# on each: an eight-pose dance took about twenty seconds of stop-start. Selecting
+# a program and pressing once runs the whole sequence with the rail energised
+# throughout, which is the same path an emotion idiom takes and the same safety
+# guards on every frame.
+
+select:
+  - platform: template
+    id: motion_program_select
+    name: Motion program name
+    optimistic: true
+    restore_value: false
+    initial_option: home
+    entity_category: config
+    options:
+      - home
+      - look_left
+      - look_right
+      - look_up
+      - nod_yes
+      - shake_no
+      - bow
+      - greet
+      - celebrate
+      - scan
+      - dance
+      - yaw_positive_10
+      - pitch_positive_10

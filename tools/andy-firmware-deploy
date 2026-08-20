@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_root="$(cd -- "${script_dir}/.." && pwd)"
+if [[ -f "${script_dir}/site.env" ]]; then
+  # shellcheck disable=SC1091
+  source "${script_dir}/site.env"
+fi
+device_host="${ANDY_DEVICE_HOST:-192.0.2.10}"
+device_mac="${ANDY_DEVICE_MAC:-AA:BB:CC:DD:EE:FF}"
+device_name="${ANDY_DEVICE_NAME:-andy}"
+device_project="${ANDY_DEVICE_PROJECT:-andy.voice-agent}"
+identity_file="$(mktemp --tmpdir andy-firmware-identity.XXXXXX)"
+
+cleanup() {
+  rm -f -- "$identity_file"
+}
+trap cleanup EXIT
+
+if [[ "${1:-}" != --apply ]] || (($# != 1)); then
+  printf 'Usage: %s --apply\n' "$0" >&2
+  exit 2
+fi
+
+"${script_dir}/esphome" compile \
+  "${project_root}/firmware/andy.yaml"
+
+"${script_dir}/uv" run \
+  --project "${project_root}/server" \
+  --python 3.12 \
+  python "${script_dir}/device_info.py" \
+  --host "$device_host" \
+  --expected-mac "$device_mac" \
+  --expected-name "$device_name" \
+  --expected-project "$device_project" \
+  --secrets "${project_root}/firmware/secrets.yaml" \
+  >"$identity_file"
+cat "$identity_file"
+
+"${script_dir}/esphome" upload \
+  "${project_root}/firmware/andy.yaml" \
+  --device "$device_host"

@@ -1,0 +1,231 @@
+# Where Andy is, and therefore where the sun is.
+#
+# The sun component needs a position. Writing one into secrets is a guess that
+# is wrong the moment the robot is carried anywhere, and the first guess made
+# here was twenty kilometres out: the timezone said Dubai, the robot is in
+# Sharjah. So Andy looks it up himself.
+#
+# One request answers it. `geo.wp-statistics.com` reports the caller's own
+# position from the address the request arrives on, and Andy's ordinary traffic
+# leaves through the house rather than the tunnel -- `peer_allowed_ips` routes
+# only the tunnel subnet -- so the address it sees is the house's, not the
+# cloud router's.
+#
+# The position is kept in flash. A robot that reboots without internet is still
+# where it was, and only a robot that has never been told fails to know, which
+# `location_known` says out loud rather than quietly reporting a sunrise for
+# the Gulf of Guinea.
+#
+# Certificates are not verified. The worst a forged answer achieves is a wrong
+# sunrise time; against that, a CA bundle on a device this size is real flash
+# spent on nothing.
+
+http_request:
+  id: web
+  verify_ssl: false
+  timeout: 15s
+  useragent: esphome/andy
+
+globals:
+  - id: known_latitude
+    type: double
+    restore_value: true
+    initial_value: "0"
+  - id: known_longitude
+    type: double
+    restore_value: true
+    initial_value: "0"
+
+  # Whether the lookup has succeeded since this boot. The position survives a
+  # restart in flash but the place name does not, so "do I know where I am"
+  # cannot be the thing that decides whether to ask: it is already true from
+  # the restored position, which left the name blank until the next refresh
+  # hours later.
+  - id: located_this_boot
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+sun:
+  id: andy_sun
+  time_id: wireguard_sntp
+  # Replaced at boot by whatever was learned last, and again whenever the
+  # lookup succeeds. A literal is required here and this one means "unknown".
+  latitude: 0.0
+  longitude: 0.0
+
+esphome:
+  on_boot:
+    # As soon as there is a network, so the place name is filled in seconds
+    # after a restart rather than at the next refresh.
+    - priority: -100
+      then:
+        - wait_until:
+            condition:
+              wifi.connected:
+            timeout: 180s
+        - script.execute: learn_where_i_am
+
+    # After globals are restored, before anything asks where the sun is.
+    - priority: 300
+      then:
+        - lambda: |-
+            if (id(known_latitude) != 0.0 || id(known_longitude) != 0.0) {
+              id(andy_sun).set_latitude(id(known_latitude));
+              id(andy_sun).set_longitude(id(known_longitude));
+              id(location_known).publish_state(true);
+              ESP_LOGI("andy.location", "restored position from flash");
+            } else {
+              id(location_known).publish_state(false);
+            }
+
+button:
+  # So the lookup can be demanded rather than waited for -- after a move, or
+  # when someone is standing in front of the robot wondering why it thinks it
+  # is at sea.
+  - platform: template
+    name: Find out where I am
+    entity_category: diagnostic
+    on_press:
+      - script.execute: learn_where_i_am
+
+script:
+  - id: learn_where_i_am
+    mode: single
+    then:
+      - http_request.get:
+          url: https://geo.wp-statistics.com/?format=json
+          capture_response: true
+          max_response_buffer_size: 2kB
+          on_response:
+            then:
+              - lambda: |-
+                  if (response->status_code != 200) {
+                    ESP_LOGW("andy.location", "lookup returned %d",
+                             response->status_code);
+                    return;
+                  }
+                  json::parse_json(body, [](JsonObject root) -> bool {
+                    if (!root["latitude"].is<double>() ||
+                        !root["longitude"].is<double>()) {
+                      return false;
+                    }
+                    const double latitude = root["latitude"].as<double>();
+                    const double longitude = root["longitude"].as<double>();
+                    // A service that answers with nonsense must not move Andy
+                    // to it. Zero is the value that means "unknown" here, so
+                    // it is refused along with anything off the planet.
+                    if (latitude < -90.0 || latitude > 90.0 ||
+                        longitude < -180.0 || longitude > 180.0 ||
+                        (latitude == 0.0 && longitude == 0.0)) {
+                      return false;
+                    }
+                    id(known_latitude) = latitude;
+                    id(known_longitude) = longitude;
+                    id(andy_sun).set_latitude(latitude);
+                    id(andy_sun).set_longitude(longitude);
+                    if (root["city"].is<const char *>()) {
+                      id(where_andy_is).publish_state(
+                          root["city"].as<std::string>());
+                    }
+                    id(location_known).publish_state(true);
+                    id(located_this_boot) = true;
+                    ESP_LOGI("andy.location", "learned where I am");
+                    return true;
+                  });
+          on_error:
+            then:
+              - logger.log:
+                  level: WARN
+                  tag: andy.location
+                  format: "could not look up where I am"
+
+sensor:
+  # How high the sun is, which is what separates dawn from noon. Five minutes
+  # is far finer than the thing it measures moves.
+  #
+  # `filters` drops every reading until Andy knows where he is. Without it the
+  # component happily reports the sun for latitude zero: sunrise at 09:59 and
+  # sunset at 22:06 were published here, which is the Gulf of Guinea, and
+  # confidently wrong is worse than absent because something downstream
+  # believes it.
+  - platform: sun
+    id: sun_elevation
+    name: Sun elevation
+    sun_id: andy_sun
+    type: elevation
+    update_interval: 300s
+    filters:
+      - lambda: |-
+          return id(location_known).state ? x : optional<float>{};
+
+binary_sensor:
+  - platform: template
+    id: daylight
+    name: Daylight
+    lambda: |-
+      if (!id(location_known).state) {
+        return {};
+      }
+      return id(andy_sun).is_above_horizon();
+
+  # Published rather than polled: the position changes when it is learned and
+  # at no other time, so there is nothing for a poll to discover.
+  - platform: template
+    id: location_known
+    name: Location known
+
+text_sensor:
+  - platform: sun
+    id: next_sunrise
+    name: Next sunrise
+    sun_id: andy_sun
+    type: sunrise
+    format: "%H:%M"
+    filters:
+      - lambda: |-
+          return id(location_known).state ? x : optional<std::string>{};
+
+  - platform: sun
+    id: next_sunset
+    name: Next sunset
+    sun_id: andy_sun
+    type: sunset
+    format: "%H:%M"
+    filters:
+      - lambda: |-
+          return id(location_known).state ? x : optional<std::string>{};
+
+  - platform: template
+    id: where_andy_is
+    name: Where Andy is
+    update_interval: never
+
+interval:
+  # Where Andy is is a fact that changes, so it is asked on a schedule rather
+  # than once at startup. Boot only would mean a robot carried to another city
+  # keeps answering for the old one until something happens to restart it, and
+  # the sun it reports would be wrong for as long as it stayed up.
+  #
+  # Three hours is chosen against what it measures: sunrise moves by about two
+  # minutes a day, so the answer is stale in no useful sense between checks,
+  # and a robot that is moved is right again within an afternoon.
+  - interval: 3h
+    then:
+      - if:
+          condition:
+            wifi.connected:
+          then:
+            - script.execute: learn_where_i_am
+
+  # Until this boot has an answer of its own, keep asking. This stops as soon
+  # as it succeeds, and covers a network that was not up yet at boot.
+  - interval: 60s
+    then:
+      - if:
+          condition:
+            and:
+              - wifi.connected:
+              - lambda: return !id(located_this_boot);
+          then:
+            - script.execute: learn_where_i_am

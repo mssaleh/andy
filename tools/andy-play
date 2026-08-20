@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/andy-lab-common.sh
+source "${script_dir}/andy-lab-common.sh"
+
+if (($# != 1)); then
+  printf 'Usage: %s audio-file\n' "$0" >&2
+  exit 2
+fi
+
+source_file="$1"
+if [[ ! -f "$source_file" || ! -s "$source_file" ]]; then
+  printf 'Audio file is unavailable or empty: %s\n' "$source_file" >&2
+  exit 1
+fi
+
+andy_require_command ffmpeg
+andy_require_command jq
+andy_require_command mktemp
+andy_require_command pw-dump
+andy_require_command pw-play
+andy_require_positive_decimal \
+  ANDY_AUDIO_WARMUP_FREQUENCY "$ANDY_AUDIO_WARMUP_FREQUENCY"
+andy_require_unit_decimal ANDY_AUDIO_WARMUP_VOLUME "$ANDY_AUDIO_WARMUP_VOLUME"
+andy_require_decimal ANDY_PLAYBACK_GAIN "$ANDY_PLAYBACK_GAIN"
+
+if [[ ! "$ANDY_AUDIO_WARMUP_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'ANDY_AUDIO_WARMUP_SECONDS must be a positive integer.\n' >&2
+  exit 1
+fi
+if [[ ! "$ANDY_AUDIO_POST_WARMUP_MILLISECONDS" =~ ^[0-9]+$ ]]; then
+  printf 'ANDY_AUDIO_POST_WARMUP_MILLISECONDS must be a non-negative integer.\n' >&2
+  exit 1
+fi
+
+if ! andy_pipewire_has_node "$ANDY_AUDIO_SINK" Audio/Sink; then
+  printf 'HDMI sink is unavailable: %s\n' "$ANDY_AUDIO_SINK" >&2
+  printf 'Wake or enable the HDMI display, then run ./tools/andy-host-check.\n' >&2
+  exit 1
+fi
+
+staged_file="$(mktemp --tmpdir --suffix=.wav andy-play.XXXXXX)"
+trap 'rm -f -- "$staged_file"' EXIT
+
+warmup_delay_ms=$((
+  ANDY_AUDIO_WARMUP_SECONDS * 1000 + ANDY_AUDIO_POST_WARMUP_MILLISECONDS
+))
+filter_complex="[0:a]volume=${ANDY_AUDIO_WARMUP_VOLUME}[warmup];[1:a]adelay=${warmup_delay_ms}:all=1,volume=${ANDY_PLAYBACK_GAIN}[content];[warmup][content]amix=inputs=2:duration=longest:normalize=0[out]"
+
+ffmpeg \
+  -hide_banner \
+  -loglevel error \
+  -f lavfi \
+  -i "sine=frequency=${ANDY_AUDIO_WARMUP_FREQUENCY}:duration=${ANDY_AUDIO_WARMUP_SECONDS}:sample_rate=48000" \
+  -i "$source_file" \
+  -filter_complex "$filter_complex" \
+  -map '[out]' \
+  -ar 48000 \
+  -ac 2 \
+  -c:a pcm_s16le \
+  -y \
+  "$staged_file"
+
+pw-play --target "$ANDY_AUDIO_SINK" "$staged_file"

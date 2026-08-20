@@ -1,0 +1,119 @@
+# The bench bring-up image.
+#
+# It carries the exact production board, audio, display, and motion packages, so
+# what passes here is what production runs. WireGuard is deliberately absent:
+# the tunnel address and key identify the production robot, and a second device
+# presenting them would collide.
+#
+# On top of production it adds an internal I2C inventory covering every device
+# `knowledge/StackChan.md` and `knowledge/StackChan-HA.md` place on the internal
+# bus, a power-rail assertion, and live microphone levels. Continuous listening
+# is off so the sound-level sensors own the microphone instead of the voice
+# assistant.
+#
+# This is not a deployment target. `./tools/andy-firmware-deploy` verifies the
+# production device name and project identity and will refuse to upload it.
+
+substitutions:
+  name: andy-diagnostics
+  friendly_name: Andy Diagnostics
+
+packages:
+  board: !include packages/board.yaml
+  power: !include packages/power.yaml
+  audio: !include packages/audio.yaml
+  emotion: !include packages/emotion.yaml
+  display: !include packages/display.yaml
+  light: !include packages/light.yaml
+  environment: !include packages/environment.yaml
+  infrared: !include packages/infrared.yaml
+  touch: !include packages/touch.yaml
+  imu: !include packages/imu.yaml
+  camera: !include packages/camera.yaml
+  motion: !include packages/motion.yaml
+  idioms: !include packages/idioms.yaml
+
+esphome:
+  project:
+    name: andy.diagnostics
+    version: 0.5.0
+  on_boot:
+    - priority: -100
+      then:
+        # Keep the voice assistant from claiming the microphone that the
+        # sound-level sensors below drive directly.
+        - lambda: id(continuous_listening_enabled) = false;
+        - delay: 2s
+        - script.execute: probe_internal_i2c
+
+sensor:
+  - platform: sound_level
+    id: microphone_level
+    microphone:
+      microphone: andy_microphone
+    passive: false
+    measurement_duration: 1s
+    peak:
+      name: Microphone peak
+    rms:
+      name: Microphone RMS
+
+text_sensor:
+  - platform: template
+    id: i2c_probe_result
+    name: Internal I2C probe
+    update_interval: never
+  - platform: template
+    id: power_rail_result
+    name: Power rails
+    update_interval: never
+
+script:
+  - id: probe_internal_i2c
+    mode: restart
+    then:
+      - lambda: |-
+          const uint8_t expected[] = {
+            0x21, 0x23, 0x34, 0x36, 0x38,
+            0x40, 0x41, 0x50, 0x51, 0x58,
+            0x68, 0x69, 0x6F,
+          };
+          std::string missing;
+          for (const uint8_t address : expected) {
+            const auto error = id(bus_internal)->write(address, nullptr, 0);
+            if (error != i2c::ERROR_OK) {
+              char item[8];
+              snprintf(item, sizeof(item), "0x%02X", address);
+              if (!missing.empty()) missing += ",";
+              missing += item;
+            }
+          }
+          if (missing.empty()) {
+            id(i2c_probe_result).publish_state("ready");
+            ESP_LOGI("andy.i2c", "All expected internal I2C devices responded");
+          } else {
+            id(i2c_probe_result).publish_state("missing: " + missing);
+            ESP_LOGW("andy.i2c", "Missing internal I2C devices: %s", missing.c_str());
+          }
+          // The servo rail must rest off. BOOST_EN and BUS_OUT_EN supply the
+          // body's 5 V devices and are expected to be on.
+          const bool servo_off = !id(servo_power).state;
+          const bool boost_on = id(boost_enable).state;
+          const bool bus_on = id(bus_output_enable).state;
+          std::string rail_state = "servo=";
+          rail_state += servo_off ? "off" : "ON";
+          rail_state += ",boost=";
+          rail_state += boost_on ? "on" : "OFF";
+          rail_state += ",bus_out=";
+          rail_state += bus_on ? "on" : "OFF";
+          id(power_rail_result).publish_state(rail_state);
+          if (servo_off && boost_on && bus_on) {
+            ESP_LOGI("andy.rails", "Servo rail off; boost and bus rails on");
+          } else {
+            ESP_LOGE("andy.rails", "Unexpected power rail state: %s", rail_state.c_str());
+          }
+
+interval:
+  - interval: 60s
+    then:
+      - script.execute: probe_internal_i2c

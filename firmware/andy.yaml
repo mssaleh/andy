@@ -1,0 +1,32 @@
+# The production `andy.voice-agent` image.
+#
+# Deploy with `./tools/andy-firmware-deploy --apply`, which verifies the MAC,
+# device name, and project identity over the encrypted native API before it
+# uploads over Wi-Fi.
+
+substitutions:
+  name: andy
+  friendly_name: Andy
+
+packages:
+  board: !include packages/board.yaml
+  network: !include packages/network.yaml
+  power: !include packages/power.yaml
+  audio: !include packages/audio.yaml
+  emotion: !include packages/emotion.yaml
+  display: !include packages/display.yaml
+  light: !include packages/light.yaml
+  environment: !include packages/environment.yaml
+  infrared: !include packages/infrared.yaml
+  touch: !include packages/touch.yaml
+  imu: !include packages/imu.yaml
+  camera: !include packages/camera.yaml
+  location: !include packages/location.yaml
+  weather: !include packages/weather.yaml
+  motion: !include packages/motion.yaml
+  idioms: !include packages/idioms.yaml
+
+esphome:
+  project:
+    name: andy.voice-agent
+    version: 0.5.0

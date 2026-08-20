@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+if (($# > 2)); then
+  printf 'Usage: %s [--output NEW_DIRECTORY]\n' "$0" >&2
+  exit 2
+fi
+if (($# == 1)) || { (($# == 2)) && [[ "$1" != --output ]]; }; then
+  printf 'Usage: %s [--output NEW_DIRECTORY]\n' "$0" >&2
+  exit 2
+fi
+
+exec "${script_dir}/andy-agent-motion-soak" \
+  --profile release \
+  --cycles 1 \
+  --event-timeout 90 \
+  "$@"

@@ -1,0 +1,29 @@
+# Infrared transmit and receive.
+#
+# The body carries an IR LED on GPIO5 and an IRM56384 receiver on GPIO10. Both
+# are surfaced through `ir_rf_proxy`, so the server can learn a code from a
+# physical remote and replay it later without a firmware change. That keeps the
+# code table on the server, where it belongs, and keeps this package free of any
+# device-specific protocol.
+
+remote_transmitter:
+  id: ir_transmitter
+  pin: GPIO5
+  carrier_duty_percent: 50%
+  # A blocking transmit would stall the 25 ms motion supervisor.
+  non_blocking: true
+
+remote_receiver:
+  id: ir_receiver
+  pin: GPIO10
+
+infrared:
+  - platform: ir_rf_proxy
+    name: Infrared transmitter
+    id: ir_proxy_transmitter
+    remote_transmitter_id: ir_transmitter
+
+  - platform: ir_rf_proxy
+    name: Infrared receiver
+    id: ir_proxy_receiver
+    remote_receiver_id: ir_receiver

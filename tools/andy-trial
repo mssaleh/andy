@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/andy-lab-common.sh
+source "${script_dir}/andy-lab-common.sh"
+
+duration="$ANDY_TRIAL_DURATION"
+output_dir=""
+
+while (($# > 0)); do
+  case "$1" in
+    --duration)
+      if (($# < 2)); then
+        printf 'Missing value after --duration.\n' >&2
+        exit 2
+      fi
+      duration="$2"
+      shift 2
+      ;;
+    --output)
+      if (($# < 2)); then
+        printf 'Missing value after --output.\n' >&2
+        exit 2
+      fi
+      output_dir="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      printf 'Unknown option: %s\n' "$1" >&2
+      exit 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if (($# == 0)); then
+  printf 'Usage: %s [--duration seconds] [--output new-directory] text to speak\n' "$0" >&2
+  exit 2
+fi
+
+andy_require_command mktemp
+andy_require_positive_decimal duration "$duration"
+spoken_text="$*"
+if [[ ! "$spoken_text" =~ [^[:space:]] ]]; then
+  printf 'Trial text cannot be empty.\n' >&2
+  exit 2
+fi
+
+"${script_dir}/andy-host-check"
+
+if [[ -z "$output_dir" ]]; then
+  output_dir="$(mktemp -d --tmpdir andy-trial.XXXXXX)"
+else
+  if [[ -e "$output_dir" ]]; then
+    printf 'Refusing to use existing output path: %s\n' "$output_dir" >&2
+    exit 1
+  fi
+  mkdir -- "$output_dir"
+fi
+
+printf '%s\n' "$spoken_text" >"${output_dir}/prompt.txt"
+
+logs_pid=""
+observation_pid=""
+
+cleanup() {
+  local exit_status=$?
+  trap - EXIT INT TERM
+  if [[ -n "$observation_pid" ]] && kill -0 "$observation_pid" 2>/dev/null; then
+    kill -TERM "$observation_pid" 2>/dev/null || true
+    wait "$observation_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$logs_pid" ]] && kill -0 "$logs_pid" 2>/dev/null; then
+    kill -TERM "$logs_pid" 2>/dev/null || true
+    wait "$logs_pid" 2>/dev/null || true
+  fi
+  exit "$exit_status"
+}
+trap cleanup EXIT INT TERM
+
+"${script_dir}/andy-logs" >"${output_dir}/device.log" 2>&1 &
+logs_pid=$!
+
+"${script_dir}/andy-observe" \
+  "$duration" \
+  "${output_dir}/observation.mkv" \
+  >"${output_dir}/observer.log" 2>&1 &
+observation_pid=$!
+
+sleep 2
+
+if ! kill -0 "$logs_pid" 2>/dev/null; then
+  wait "$logs_pid"
+fi
+if ! kill -0 "$observation_pid" 2>/dev/null; then
+  wait "$observation_pid"
+fi
+
+"${script_dir}/andy-say" "$spoken_text"
+
+wait "$observation_pid"
+observation_pid=""
+
+kill -TERM "$logs_pid" 2>/dev/null || true
+wait "$logs_pid" 2>/dev/null || true
+logs_pid=""
+
+trap - EXIT INT TERM
+
+printf 'Trial artifacts: %s\n' "$output_dir"
+printf '  video and microphone: %s\n' "${output_dir}/observation.mkv"
+printf '  Wi-Fi device log: %s\n' "${output_dir}/device.log"
+printf '  prompt: %s\n' "${output_dir}/prompt.txt"

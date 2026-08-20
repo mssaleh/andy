@@ -1,0 +1,169 @@
+# The robot body's 12-LED status ring.
+#
+# Every ring update blocks the main loop for about 34 ms. `write_led_ram_` in
+# the pinned vendor `m5ioe1` component ends with an unconditional `delay(30)`
+# after writing LED RAM, and measurement on this unit puts the whole operation
+# at avg 33.6 ms, max 34.8 ms. That is longer than the 25 ms motion supervisor
+# period in `motion.yaml`, so this package:
+#
+#   - never updates the ring while `motion_active` is true;
+#   - writes only when the resolved colour actually changes, so the frequent
+#     `listening` / `speech detected` flapping costs nothing;
+#   - keeps transitions instantaneous, because an addressable transition
+#     redraws every loop and each redraw pays the 30 ms delay again;
+#   - offers no continuously-updating effect.
+#
+# That last point is measured, not cautious. Running `addressable_rainbow` on
+# this ring produced 346 frames in a 30-second window at avg 33.8 ms, which is
+# 11.7 s of blocking delay: 39% of wall-clock, and a supervisor tick missed
+# many times over. An effect is reachable from the web server and from Home
+# Assistant without the agent server knowing, so no server-side policy can make
+# one safe. Only a discrete effect that repaints on a slow timer is offered.
+#
+# The ring needs BUS 5 V, which `board.yaml` supplies by holding BOOST_EN and
+# BUS_OUT_EN on.
+#
+# `status_ring_follows_voice` makes the ring a standalone indicator: it tracks
+# `voice_state` with no server involved, which is what Andy shows when the
+# tunnel is down. A server that wants the ring for something else turns that
+# switch off and owns the light directly.
+
+esphome:
+  on_shutdown:
+    - priority: 700
+      then:
+        - light.turn_off: status_ring
+
+switch:
+  # PY32 IO14 / exposed pin 13 gates the addressable strip. The LED RAM
+  # configuration the light component writes has no effect until this is on.
+  - platform: gpio
+    id: status_ring_power
+    internal: true
+    pin:
+      m5ioe1_id: m5ioe1_hub
+      number: 13
+      mode:
+        output: true
+        pullup: true
+        open_drain: false
+    restore_mode: ALWAYS_ON
+
+  - platform: template
+    id: status_ring_follows_voice
+    name: Status ring follows voice
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - lambda: id(status_ring_signature) = -1;
+      - script.execute: apply_voice_light
+
+light:
+  - platform: m5ioe1
+    id: status_ring
+    name: Status ring
+    icon: mdi:led-strip
+    num_led: 12
+    # An addressable transition redraws every loop, and every redraw is a
+    # blocking I2C write. Colour changes are therefore instantaneous.
+    default_transition_length: 0s
+    restore_mode: ALWAYS_OFF
+    effects:
+      # One repaint every two seconds is 1.7% of wall-clock. Anything that
+      # animates between frames is not offered; see the header.
+      - random:
+          name: Slow random
+          transition_length: 0s
+          update_interval: 2s
+
+globals:
+  # Last colour and brightness actually written, so a repaint that would change
+  # nothing is skipped. -1 forces the next evaluation to write.
+  - id: status_ring_signature
+    type: int
+    restore_value: false
+    initial_value: "-1"
+
+script:
+  # The ring is the emotion, read from the same table as the face. Device state
+  # still wins: a muted or disconnected robot must be obvious regardless of mood.
+  - id: apply_voice_light
+    mode: restart
+    then:
+      - if:
+          condition:
+            and:
+              - switch.is_on: status_ring_follows_voice
+              - binary_sensor.is_off: motion_active_sensor
+          then:
+            - lambda: |-
+                const std::string state = id(voice_state).state;
+                const bool disconnected =
+                  state.find("disconnected") != std::string::npos;
+                const bool error = state.rfind("error", 0) == 0 ||
+                                   state.find("fault") != std::string::npos;
+                const bool muted = state == "muted";
+
+                uint8_t r, g, b;
+                float brightness;
+                bool pulse = false;
+                if (disconnected || error) {
+                  r = 255; g = 25; b = 25; brightness = 0.4f;
+                } else if (muted) {
+                  r = 255; g = 50; b = 255; brightness = 0.15f;
+                } else {
+                  const auto &profile = andy::EMOTIONS[id(emotion_index)];
+                  r = profile.ring.r; g = profile.ring.g; b = profile.ring.b;
+                  pulse = profile.ring_pulse;
+                  // Intensity sets how loudly the ring states the mood.
+                  brightness = 0.10f + 0.40f * (id(emotion_intensity) / 100.0f);
+                }
+
+                // Each repaint costs about 34 ms of blocked main loop, so skip
+                // one that would draw what is already showing.
+                const int32_t signature =
+                    (r << 16) | (g << 8) | b |
+                    ((int32_t)(brightness * 100) << 24);
+                if (signature == id(status_ring_signature)) {
+                  return;
+                }
+                id(status_ring_signature) = signature;
+
+                auto call = id(status_ring).turn_on();
+                call.set_transition_length(0);
+                call.set_brightness(brightness);
+                call.set_rgb(r / 255.0f, g / 255.0f, b / 255.0f);
+                call.perform();
+                if (pulse) {
+                  id(pulse_status_ring).execute();
+                } else {
+                  id(pulse_status_ring).stop();
+                }
+
+  # A slow two-step pulse for high-arousal emotions. Deliberately not an
+  # addressable effect: each frame pays the vendor component's 30 ms delay.
+  - id: pulse_status_ring
+    mode: restart
+    then:
+      - while:
+          condition:
+            lambda: return andy::EMOTIONS[id(emotion_index)].ring_pulse;
+          then:
+            - delay: 900ms
+            - lambda: |-
+                if (id(motion_active_sensor).state) return;
+                auto call = id(status_ring).turn_on();
+                call.set_transition_length(0);
+                call.set_brightness(0.06f);
+                call.perform();
+            - delay: 400ms
+            - lambda: |-
+                if (id(motion_active_sensor).state) return;
+                const auto &profile = andy::EMOTIONS[id(emotion_index)];
+                auto call = id(status_ring).turn_on();
+                call.set_transition_length(0);
+                call.set_brightness(0.10f + 0.40f * (id(emotion_intensity) / 100.0f));
+                call.set_rgb(profile.ring.r / 255.0f, profile.ring.g / 255.0f,
+                             profile.ring.b / 255.0f);
+                call.perform();

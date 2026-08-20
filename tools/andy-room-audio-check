@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/andy-lab-common.sh
+source "${script_dir}/andy-lab-common.sh"
+
+input_file=""
+output_file=""
+expected_words=()
+
+while (($# > 0)); do
+  case "$1" in
+    --input)
+      if (($# < 2)); then
+        printf 'Missing value after --input.\n' >&2
+        exit 2
+      fi
+      input_file="$2"
+      shift 2
+      ;;
+    --output)
+      if (($# < 2)); then
+        printf 'Missing value after --output.\n' >&2
+        exit 2
+      fi
+      output_file="$2"
+      shift 2
+      ;;
+    --expect-word)
+      if (($# < 2)); then
+        printf 'Missing value after --expect-word.\n' >&2
+        exit 2
+      fi
+      expected_words+=("$2")
+      shift 2
+      ;;
+    *)
+      printf 'Unknown argument: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "$input_file" ]] || ((${#expected_words[@]} == 0)); then
+  printf 'Usage: %s --input AUDIO [--output NEW_JSON] --expect-word WORD [...]\n' \
+    "$0" >&2
+  exit 2
+fi
+if [[ ! -s "$input_file" ]]; then
+  printf 'Audio evidence is missing or empty: %s\n' "$input_file" >&2
+  exit 1
+fi
+if [[ -n "$output_file" && -e "$output_file" ]]; then
+  printf 'Refusing to overwrite existing result: %s\n' "$output_file" >&2
+  exit 1
+fi
+for word in "${expected_words[@]}"; do
+  if [[ ! "$word" =~ ^[a-z0-9]+$ ]]; then
+    printf 'Expected words must be lowercase ASCII letters or digits: %s\n' \
+      "$word" >&2
+    exit 2
+  fi
+done
+
+for command_name in curl ffmpeg ffprobe jq sed tr; do
+  andy_require_command "$command_name"
+done
+
+audio_probe="$(
+  ffprobe \
+    -v error \
+    -select_streams a:0 \
+    -show_entries stream=codec_name,sample_rate,channels \
+    -show_entries format=duration \
+    -of json \
+    "$input_file"
+)"
+# Whisper's context window is exactly 30 seconds and the room ASR endpoint does
+# not chunk: a 29-second clip transcribes, a 30-second clip returns an empty
+# string. Rejecting the clip here turns that into a loud failure instead of a
+# silent "expected word missing". Record for as long as needed, then slice the
+# response window before checking it.
+if ! jq -e \
+  '(.streams | length) == 1
+   and (.streams[0].sample_rate | tonumber) > 0
+   and .streams[0].channels > 0
+   and (.format.duration | tonumber) >= 0.5
+   and (.format.duration | tonumber) < 30' \
+  >/dev/null <<<"$audio_probe"; then
+  printf 'Audio evidence must contain 0.5 to 29.9 seconds of valid audio: %s\n' \
+    "$input_file" >&2
+  printf 'The room ASR window is 30 seconds; slice the response before checking.\n' >&2
+  exit 1
+fi
+
+curl \
+  --fail \
+  --silent \
+  --show-error \
+  --max-time 5 \
+  --output /dev/null \
+  "${ANDY_ASR_URL%/}/health"
+
+asr_json="$(
+  ffmpeg \
+    -hide_banner \
+    -loglevel error \
+    -i "$input_file" \
+    -vn \
+    -ac 1 \
+    -ar 16000 \
+    -f s16le \
+    pipe:1 \
+  | curl \
+      --fail \
+      --silent \
+      --show-error \
+      --max-time 45 \
+      --header 'Content-Type: application/octet-stream' \
+      --data-binary @- \
+      "${ANDY_ASR_URL%/}/transcribe"
+)"
+if ! jq -e '.text | type == "string"' >/dev/null <<<"$asr_json"; then
+  printf 'Room ASR returned an invalid response.\n' >&2
+  exit 1
+fi
+
+transcript="$(jq -r '.text' <<<"$asr_json")"
+normalized="$(
+  printf '%s' "$transcript" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9]+/ /g; s/^ +//; s/ +$//'
+)"
+passed=true
+for word in "${expected_words[@]}"; do
+  case " $normalized " in
+    *" $word "*) ;;
+    *) passed=false ;;
+  esac
+done
+
+volume_stats="$(
+  ffmpeg \
+    -hide_banner \
+    -nostats \
+    -i "$input_file" \
+    -af volumedetect \
+    -f null \
+    - \
+    2>&1
+)"
+mean_dbfs="$(
+  sed -n 's/.*mean_volume: \([^ ]*\) dB.*/\1/p' <<<"$volume_stats"
+)"
+peak_dbfs="$(
+  sed -n 's/.*max_volume: \([^ ]*\) dB.*/\1/p' <<<"$volume_stats"
+)"
+expected_json="$(jq -cn --args '$ARGS.positional' "${expected_words[@]}")"
+result_json="$(
+  jq -n \
+    --arg input "$input_file" \
+    --arg transcript "$transcript" \
+    --arg normalized_transcript "$normalized" \
+    --arg mean_dbfs "$mean_dbfs" \
+    --arg peak_dbfs "$peak_dbfs" \
+    --argjson expected_words "$expected_json" \
+    --argjson audio "$audio_probe" \
+    --argjson asr "$asr_json" \
+    --argjson passed "$passed" \
+    '{
+      input: $input,
+      passed: $passed,
+      expected_words: $expected_words,
+      transcript: $transcript,
+      normalized_transcript: $normalized_transcript,
+      mean_dbfs: $mean_dbfs,
+      peak_dbfs: $peak_dbfs,
+      audio: $audio,
+      asr: $asr
+    }'
+)"
+
+if [[ -n "$output_file" ]]; then
+  printf '%s\n' "$result_json" >"$output_file"
+else
+  printf '%s\n' "$result_json"
+fi
+
+printf 'Room-audio reply check: %s; transcript=%q\n' "$passed" "$transcript" >&2
+if [[ "$passed" != true ]]; then
+  exit 1
+fi

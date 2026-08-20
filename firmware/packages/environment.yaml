@@ -1,0 +1,52 @@
+# Ambient light and proximity.
+#
+# The LTR-553ALS-WA sits behind the front glass, so it reports both how bright
+# the room is and whether something is close to Andy's face. Proximity is the
+# only presence signal the robot has without the camera, and it is the input to
+# every server-side attention decision.
+#
+# The component owns the hysteresis: it raises the high trigger above 500 counts
+# and the low trigger below 300, with a five-second cooldown between them, so
+# `presence` cannot chatter on a hand passing by.
+#
+# `update_interval` governs the ambient-light reading only. With proximity
+# enabled the component calls `check_and_trigger_ps_()` from `loop()` on every
+# iteration, which measures on this unit at avg 0.58 ms, max 17.1 ms, and makes
+# it the second-largest consumer of main-loop time. There is no configuration
+# that slows it. Proximity is Andy's only presence signal without the camera,
+# so the cost is accepted rather than avoided.
+
+sensor:
+  - platform: ltr_als_ps
+    id: ambient_sensor
+    i2c_id: bus_internal
+    address: 0x23
+    type: ALS_PS
+    update_interval: 10s
+    auto_mode: true
+    glass_attenuation_factor: 2.5
+    ps_cooldown: 5s
+    ps_high_threshold: 500
+    ps_low_threshold: 300
+    ambient_light:
+      id: ambient_light
+      name: Ambient light
+    ps_counts:
+      id: proximity_counts
+      name: Proximity counts
+    on_ps_high_threshold:
+      - binary_sensor.template.publish:
+          id: presence
+          state: true
+      - lambda: |-
+          id(set_emotion)->execute(andy::E_SURPRISED, 80, 6, andy::P_INTERACT);
+    on_ps_low_threshold:
+      - binary_sensor.template.publish:
+          id: presence
+          state: false
+
+binary_sensor:
+  - platform: template
+    id: presence
+    name: Presence
+    device_class: occupancy

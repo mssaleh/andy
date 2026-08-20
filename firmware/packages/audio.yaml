@@ -1,0 +1,405 @@
+# Hearing and speaking: the I2S audio stack, both speakers, the media player,
+# the voice assistant, and the capture-pause handshake that keeps Andy from
+# transcribing his own voice.
+#
+# The AW88298 has no separate enable line: the vendor driver configures it over
+# I2C and the 1 W speaker draws from the CoreS3 rails, not from BOOST_EN. The
+# amplifier-required and amplifier-idle callbacks therefore only count.
+#
+# Requires `display.yaml` for `andy_display` and `light.yaml` for the status
+# ring, both of which the voice state drives, and `motion.yaml` for the
+# emergency-stop button pressed when the server drops.
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/n-IA-hane/esphome-audio-stack.git
+      ref: d03a546051d80bf263ba85c465e2db7224448abc
+      path: esphome/components
+    components: [esp_audio_stack]
+
+# The vendor driver initializes the AW88298 for the 48 kHz I2S stream. The
+# esp_audio_stack speaker owns the I2S peripheral and software volume.
+audio_dac:
+  - platform: aw88298
+    id: aw88298_dac
+    i2c_id: bus_internal
+    sample_rate: 48000
+
+# I2S runs at 48 kHz for the speaker; `output_sample_rate` rate-converts the
+# microphone 3:1 down to the 16 kHz mono PCM16 the server's VAD and Whisper
+# expect.
+esp_audio_stack:
+  id: audio_stack
+  sample_rate: 48000
+  output_sample_rate: 16000
+  bits_per_sample: 16
+  slot_bit_width: 16
+  mic_channel: right
+  tx_channel: left
+  correct_dc_offset: true
+  buffers_in_psram: true
+  i2s_mclk_pin:
+    number: GPIO0
+    ignore_strapping_warning: true
+  i2s_lrclk_pin: GPIO33
+  i2s_bclk_pin: GPIO34
+  i2s_din_pin: GPIO14
+  i2s_dout_pin: GPIO13
+  codec:
+    i2c_id: bus_internal
+    input:
+      type: es7210
+      address: 0x40
+      mic_selected: 0x07
+      gain_db: 36
+  on_amplifier_required:
+    - lambda: |-
+        id(amplifier_start_count)++;
+        id(amplifier_starts).publish_state(id(amplifier_start_count));
+        ESP_LOGI("andy.voice_gate", "Amplifier required (count=%" PRIu32 ")",
+                 id(amplifier_start_count));
+  on_amplifier_idle:
+    - lambda: |-
+        id(amplifier_idle_count)++;
+        id(amplifier_idles).publish_state(id(amplifier_idle_count));
+        ESP_LOGI("andy.voice_gate", "Amplifier idle (count=%" PRIu32 ")",
+                 id(amplifier_idle_count));
+
+microphone:
+  - platform: esp_audio_stack
+    id: andy_microphone
+    esp_audio_stack_id: audio_stack
+
+speaker:
+  - platform: esp_audio_stack
+    id: andy_hardware_speaker
+    esp_audio_stack_id: audio_stack
+    sample_rate: 48000
+    buffer_duration: 500ms
+
+  - platform: resampler
+    id: andy_announcement_speaker
+    output_speaker: andy_hardware_speaker
+    sample_rate: 48000
+    # Sized against the same 243 ms tunnel round trip as the media buffer above.
+    buffer_duration: 1000ms
+    task_stack_in_psram: true
+
+globals:
+  - id: continuous_listening_enabled
+    type: bool
+    restore_value: false
+    initial_value: "true"
+  - id: response_capture_paused
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: turn_start_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: speech_detection_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: turn_end_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: error_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: announcement_start_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: capture_pause_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: announcement_finish_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: amplifier_start_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: amplifier_idle_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+script:
+  - id: resume_continuous_listening
+    mode: restart
+    then:
+      - delay: 250ms
+      - if:
+          condition:
+            and:
+              - api.connected:
+              - not:
+                  voice_assistant.is_running:
+              - not:
+                  media_player.is_announcing: andy_media_player
+              - lambda: return id(continuous_listening_enabled);
+              - lambda: return !id(response_capture_paused);
+          then:
+            - voice_assistant.start_continuous:
+            - text_sensor.template.publish:
+                id: voice_state
+                state: "listening"
+
+  - id: pause_capture_for_response
+    mode: restart
+    then:
+      - lambda: id(response_capture_paused) = true;
+      - script.stop: resume_continuous_listening
+      - voice_assistant.stop:
+      - wait_until:
+          condition:
+            not:
+              voice_assistant.is_running:
+          timeout: 5s
+      - if:
+          condition:
+            not:
+              voice_assistant.is_running:
+          then:
+            - lambda: |-
+                id(capture_pause_count)++;
+                id(capture_pauses).publish_state(id(capture_pause_count));
+                ESP_LOGI("andy.voice_gate",
+                         "Capture paused for response (count=%" PRIu32 ")",
+                         id(capture_pause_count));
+            - text_sensor.template.publish:
+                id: voice_state
+                state: "capture paused"
+          else:
+            - lambda: |-
+                id(error_count)++;
+                id(voice_errors).publish_state(id(error_count));
+                id(response_capture_paused) = false;
+                ESP_LOGE("andy.voice_gate",
+                         "Capture did not stop before response playback");
+            - text_sensor.template.publish:
+                id: voice_state
+                state: "capture pause fault"
+            - script.execute: resume_continuous_listening
+
+media_player:
+  - platform: speaker
+    id: andy_media_player
+    name: Andy speaker
+    # Playback starts at 75% of this buffer (`audio_pipeline.cpp`), so this sets
+    # how much audio is banked before the speaker begins. Andy reaches the
+    # server only over WireGuard, which hairpins through the cloud router at a
+    # measured 243 ms round trip. A prebuffer shorter than one round trip cannot
+    # survive a single retransmission, so 48 KiB of the 24 kHz mono stream is
+    # banked first: one second of audio, four round trips of slack.
+    buffer_size: 64000
+    task_stack_in_psram: true
+    volume_initial: 80%
+    volume_min: 20%
+    volume_max: 100%
+    # Matches KokoroTTS(target_sample_rate=24_000) on the server.
+    announcement_pipeline:
+      speaker: andy_announcement_speaker
+      format: WAV
+      sample_rate: 24000
+      num_channels: 1
+    on_announcement:
+      - lambda: id(response_capture_paused) = true;
+      - script.stop: resume_continuous_listening
+      - voice_assistant.stop:
+      - lambda: |-
+          id(announcement_start_count)++;
+          id(announcement_starts).publish_state(id(announcement_start_count));
+          ESP_LOGI("andy.voice_gate", "Announcement started (count=%" PRIu32 ")",
+                   id(announcement_start_count));
+      - lambda: |-
+          id(set_emotion)->execute(andy::E_TALKING, 70, 8, andy::P_VOICE);
+      - text_sensor.template.publish:
+          id: voice_state
+          state: "announcing"
+    on_idle:
+      - lambda: id(response_capture_paused) = false;
+      - lambda: |-
+          id(announcement_finish_count)++;
+          id(announcement_finishes).publish_state(id(announcement_finish_count));
+          ESP_LOGI("andy.voice_gate", "Announcement finished (count=%" PRIu32 ")",
+                   id(announcement_finish_count));
+      - text_sensor.template.publish:
+          id: voice_state
+          state: "idle"
+      - script.execute: resume_continuous_listening
+
+voice_assistant:
+  id: voice_agent
+  microphone:
+    microphone: andy_microphone
+  media_player: andy_media_player
+  use_wake_word: false
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+  on_client_connected:
+    - lambda: |-
+        id(turn_starts).publish_state(id(turn_start_count));
+        id(speech_detections).publish_state(id(speech_detection_count));
+        id(turn_ends).publish_state(id(turn_end_count));
+        id(voice_errors).publish_state(id(error_count));
+        id(capture_pauses).publish_state(id(capture_pause_count));
+        id(announcement_starts).publish_state(id(announcement_start_count));
+        id(announcement_finishes).publish_state(id(announcement_finish_count));
+        id(amplifier_starts).publish_state(id(amplifier_start_count));
+        id(amplifier_idles).publish_state(id(amplifier_idle_count));
+    - text_sensor.template.publish:
+        id: voice_state
+        state: "idle"
+    - script.execute: resume_continuous_listening
+  on_client_disconnected:
+    - script.stop: resume_continuous_listening
+    - voice_assistant.stop:
+    - button.press: motion_emergency_stop_button
+    - lambda: |-
+        id(response_capture_paused) = false;
+        id(motion_inhibited) = false;
+        id(motion_inhibited_sensor).publish_state(false);
+    - text_sensor.template.publish:
+        id: voice_state
+        state: "server disconnected"
+  on_start:
+    - lambda: |-
+        id(turn_start_count)++;
+        id(turn_starts).publish_state(id(turn_start_count));
+        ESP_LOGI("andy.voice_gate", "Voice turn started (count=%" PRIu32 ")",
+                 id(turn_start_count));
+    - text_sensor.template.publish:
+        id: voice_state
+        state: "listening"
+  on_stt_vad_start:
+    - lambda: |-
+        id(set_emotion)->execute(andy::E_ATTENTIVE, 55, 6, andy::P_VOICE);
+        id(speech_detection_count)++;
+        id(speech_detections).publish_state(id(speech_detection_count));
+        ESP_LOGI("andy.voice_gate", "Speech detected (count=%" PRIu32 ")",
+                 id(speech_detection_count));
+    - text_sensor.template.publish:
+        id: voice_state
+        state: "speech detected"
+  on_stt_vad_end:
+    - text_sensor.template.publish:
+        id: voice_state
+        state: "processing speech"
+  on_end:
+    - lambda: |-
+        id(turn_end_count)++;
+        id(turn_ends).publish_state(id(turn_end_count));
+        ESP_LOGI("andy.voice_gate", "Voice turn ended (count=%" PRIu32 ")",
+                 id(turn_end_count));
+    - script.execute: resume_continuous_listening
+  on_error:
+    - lambda: |-
+        id(error_count)++;
+        id(voice_errors).publish_state(id(error_count));
+    - logger.log:
+        format: "Voice assistant error %s: %s"
+        args: ["code.c_str()", "message.c_str()"]
+    - text_sensor.template.publish:
+        id: voice_state
+        state: !lambda |-
+          return std::string("error: ") + code;
+    - script.execute: resume_continuous_listening
+
+button:
+  - platform: template
+    id: conversation_pause_button
+    name: Pause capture for response
+    entity_category: diagnostic
+    on_press:
+      - script.execute: pause_capture_for_response
+
+  - platform: template
+    id: conversation_follow_up_button
+    name: Conversation follow up
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          id(continuous_listening_enabled) = true;
+          id(response_capture_paused) = false;
+      - script.execute: resume_continuous_listening
+
+  - platform: template
+    id: conversation_sleep_button
+    name: Conversation sleep
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          id(continuous_listening_enabled) = false;
+          id(response_capture_paused) = false;
+      - script.stop: resume_continuous_listening
+      - voice_assistant.stop:
+      - media_player.stop:
+      - text_sensor.template.publish:
+          id: voice_state
+          state: "muted"
+
+sensor:
+  - platform: template
+    id: turn_starts
+    name: Voice turn starts
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: speech_detections
+    name: Speech detections
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: turn_ends
+    name: Voice turn ends
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: voice_errors
+    name: Voice errors
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: capture_pauses
+    name: Capture pauses
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: announcement_starts
+    name: Announcement starts
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: announcement_finishes
+    name: Announcement finishes
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: amplifier_starts
+    name: Amplifier starts
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: amplifier_idles
+    name: Amplifier idles
+    accuracy_decimals: 0
+    update_interval: never
+
+text_sensor:
+  - platform: template
+    id: voice_state
+    name: Voice state
+    update_interval: never
+    on_value:
+      - component.update: andy_display
+      - script.execute: apply_voice_light

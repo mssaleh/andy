@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/andy-lab-common.sh
+source "${script_dir}/andy-lab-common.sh"
+
+if (($# != 0)); then
+  printf 'Usage: %s\n' "$0" >&2
+  exit 2
+fi
+
+andy_require_command v4l2-ctl
+
+if [[ ! -c "$ANDY_CAMERA_DEVICE" ]]; then
+  printf 'Camera device is unavailable: %s\n' "$ANDY_CAMERA_DEVICE" >&2
+  exit 1
+fi
+
+if [[ ! "$ANDY_CAMERA_FOCUS" =~ ^[0-9]+$ ]] ||
+  ((ANDY_CAMERA_FOCUS < 300 || ANDY_CAMERA_FOCUS > 650)); then
+  printf 'ANDY_CAMERA_FOCUS must be an integer from 300 through 650.\n' >&2
+  exit 1
+fi
+if [[ ! "$ANDY_CAMERA_POWER_LINE_FREQUENCY" =~ ^[0-3]$ ]]; then
+  printf 'ANDY_CAMERA_POWER_LINE_FREQUENCY must be 0, 1, 2, or 3.\n' >&2
+  exit 1
+fi
+
+v4l2-ctl \
+  --device "$ANDY_CAMERA_DEVICE" \
+  --set-ctrl "focus_automatic_continuous=0,focus_absolute=${ANDY_CAMERA_FOCUS},power_line_frequency=${ANDY_CAMERA_POWER_LINE_FREQUENCY}"
+
+v4l2-ctl \
+  --device "$ANDY_CAMERA_DEVICE" \
+  --get-ctrl focus_automatic_continuous,focus_absolute,power_line_frequency

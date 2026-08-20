@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/andy-lab-common.sh
+source "${script_dir}/andy-lab-common.sh"
+
+if (($# != 0)); then
+  printf 'Usage: %s\n' "$0" >&2
+  exit 2
+fi
+
+for command_name in curl ffmpeg ffprobe jq pw-dump pw-play v4l2-ctl wpctl; do
+  andy_require_command "$command_name"
+done
+
+if [[ ! -c "$ANDY_CAMERA_DEVICE" ]]; then
+  printf 'Camera device is unavailable: %s\n' "$ANDY_CAMERA_DEVICE" >&2
+  exit 1
+fi
+
+if ! andy_pipewire_has_node "$ANDY_AUDIO_SINK" Audio/Sink; then
+  printf 'HDMI sink is unavailable: %s\n' "$ANDY_AUDIO_SINK" >&2
+  printf 'Wake or enable the HDMI display, then rerun this check.\n' >&2
+  exit 1
+fi
+if ! andy_pipewire_has_node "$ANDY_CAMERA_AUDIO_SOURCE" Audio/Source; then
+  printf 'C200 microphone source is unavailable: %s\n' "$ANDY_CAMERA_AUDIO_SOURCE" >&2
+  exit 1
+fi
+
+"${script_dir}/andy-camera-setup"
+
+curl \
+  --fail \
+  --silent \
+  --show-error \
+  --max-time 5 \
+  --output /dev/null \
+  "${ANDY_TTS_URL%/}/health"
+curl \
+  --fail \
+  --silent \
+  --show-error \
+  --max-time 5 \
+  --output /dev/null \
+  "${ANDY_ASR_URL%/}/health"
+
+printf 'Camera: %s at %s, %s fps, fixed focus %s\n' \
+  "$ANDY_CAMERA_DEVICE" \
+  "$ANDY_CAMERA_VIDEO_SIZE" \
+  "$ANDY_CAMERA_FRAME_RATE" \
+  "$ANDY_CAMERA_FOCUS"
+printf 'Microphone: %s\n' "$ANDY_CAMERA_AUDIO_SOURCE"
+printf 'HDMI sink: %s\n' "$ANDY_AUDIO_SINK"
+printf 'TTS: %s (%s)\n' "$ANDY_TTS_URL" "$ANDY_TTS_VOICE"
+printf 'Room-audio ASR: %s\n' "$ANDY_ASR_URL"
+printf 'Robot Wi-Fi target: %s\n' "$ANDY_DEVICE_HOST"

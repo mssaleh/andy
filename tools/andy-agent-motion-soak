@@ -1,0 +1,1023 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/andy-lab-common.sh
+source "${script_dir}/andy-lab-common.sh"
+
+cycles=1
+event_timeout=90
+output_dir=""
+profile=""
+
+while (($# > 0)); do
+  case "$1" in
+    --cycles)
+      if (($# < 2)); then
+        printf 'Missing value after --cycles.\n' >&2
+        exit 2
+      fi
+      cycles="$2"
+      shift 2
+      ;;
+    --event-timeout)
+      if (($# < 2)); then
+        printf 'Missing value after --event-timeout.\n' >&2
+        exit 2
+      fi
+      event_timeout="$2"
+      shift 2
+      ;;
+    --output)
+      if (($# < 2)); then
+        printf 'Missing value after --output.\n' >&2
+        exit 2
+      fi
+      output_dir="$2"
+      shift 2
+      ;;
+    --profile)
+      if (($# < 2)); then
+        printf 'Missing value after --profile.\n' >&2
+        exit 2
+      fi
+      profile="$2"
+      shift 2
+      ;;
+    *)
+      printf 'Unknown argument: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ ! "$cycles" =~ ^[1-9][0-9]*$ ]] || ((cycles > 5)); then
+  printf 'cycles must be an integer from 1 through 5, got: %s\n' "$cycles" >&2
+  exit 2
+fi
+if [[ "$profile" != diagnostic && "$profile" != release ]]; then
+  printf 'profile must be explicitly set to diagnostic or release.\n' >&2
+  exit 2
+fi
+if [[ "$profile" == release ]] && ((cycles != 1)); then
+  printf 'The release profile is fixed at one three-command canary cycle.\n' >&2
+  exit 2
+fi
+if [[ ! "$event_timeout" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'event-timeout must be a positive integer, got: %s\n' "$event_timeout" >&2
+  exit 2
+fi
+if [[ ! "$ANDY_VOICE_SERVER_SERVICE" =~ ^[A-Za-z0-9_.@-]+$ ]]; then
+  printf 'Invalid server service name: %s\n' "$ANDY_VOICE_SERVER_SERVICE" >&2
+  exit 2
+fi
+
+for command_name in awk curl ffmpeg ffprobe gdbus gnome-session-inhibit jq mktemp pw-dump rg ssh; do
+  andy_require_command "$command_name"
+done
+if [[ ! -c "$ANDY_CAMERA_DEVICE" ]]; then
+  printf 'Camera device is unavailable: %s\n' "$ANDY_CAMERA_DEVICE" >&2
+  exit 1
+fi
+if ! andy_pipewire_has_node "$ANDY_CAMERA_AUDIO_SOURCE" Audio/Source; then
+  printf 'C200 microphone source is unavailable: %s\n' "$ANDY_CAMERA_AUDIO_SOURCE" >&2
+  exit 1
+fi
+
+if [[ -z "$output_dir" ]]; then
+  output_dir="$(mktemp -d --tmpdir andy-agent-motion-soak.XXXXXX)"
+else
+  if [[ -e "$output_dir" ]]; then
+    printf 'Refusing to use existing output path: %s\n' "$output_dir" >&2
+    exit 1
+  fi
+  mkdir -- "$output_dir"
+fi
+
+device_log="${output_dir}/device.log"
+video_file="${output_dir}/observation.mkv"
+attempt_log="${output_dir}/attempts.tsv"
+timeline_log="${output_dir}/timeline.tsv"
+summary_file="${output_dir}/summary.txt"
+failure_file="${output_dir}/failure.txt"
+initial_actions="${output_dir}/actions-before.json"
+final_actions="${output_dir}/actions-after.json"
+
+curl \
+  --fail \
+  --silent \
+  --show-error \
+  --max-time 10 \
+  "${ANDY_VOICE_SERVER_URL%/}/health" \
+  >"${output_dir}/server-health.json"
+# Read from the source rather than written here. A literal drifts the moment
+# the server is bumped, and it drifted: a release trial died at this gate with
+# no output at all because production had moved to the next version.
+expected_version="$(
+  sed -n 's/^__version__ = "\(.*\)"$/\1/p' \
+    "${ANDY_PROJECT_ROOT}/server/src/andy/__init__.py"
+)"
+if [[ -z "$expected_version" ]]; then
+  printf 'Could not read the server version from the source tree.\n' >&2
+  exit 1
+fi
+if ! jq -e --arg version "$expected_version" \
+  '.ok and .version == $version
+   and .asr and .tts and .llm and .device_enabled and .device_connected
+   and .motion_actions_enabled and .motion_ready' \
+  "${output_dir}/server-health.json" \
+  >/dev/null; then
+  # A gate that refuses without saying why costs a physical cycle to diagnose.
+  printf 'Production is not ready for a release trial (expected version %s):\n' \
+    "$expected_version" >&2
+  jq -r '"  " + (to_entries | map("\(.key)=\(.value)") | join(" "))' \
+    "${output_dir}/server-health.json" >&2
+  exit 1
+fi
+if [[ "$profile" == release ]]; then
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --max-time 10 \
+    "${ANDY_VOICE_SERVER_URL%/}/motions" \
+    >"${output_dir}/motion-catalog.json"
+  jq -e \
+    '(.motions | length) == 13
+     and any(.motions[]; .name == "look_right" and (.steps | length) == 2)
+     and any(.motions[]; .name == "nod_yes" and (.steps | length) == 4)
+     and any(.motions[]; .name == "dance" and (.steps | length) == 8)' \
+    "${output_dir}/motion-catalog.json" \
+    >/dev/null
+fi
+
+curl \
+  --fail \
+  --silent \
+  --show-error \
+  --max-time 10 \
+  "${ANDY_VOICE_SERVER_URL%/}/actions" \
+  >"$initial_actions"
+jq -e \
+  '.enabled and .device.connected and .device.ready
+   and (.device.motion_active == false)
+   and (.device.motion_inhibited == false)
+   and (.device.voice_errors >= 0)' \
+  "$initial_actions" \
+  >/dev/null
+
+server_log_since="$(
+  ssh -F /dev/null -o BatchMode=yes "$ANDY_DIAGNOSTIC_SSH_HOST" \
+    "date '+%Y-%m-%d %H:%M:%S'"
+)"
+if [[ ! "$server_log_since" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+  printf 'Unexpected remote journal timestamp: %s\n' "$server_log_since" >&2
+  exit 1
+fi
+printf '%s\n' "$server_log_since" >"${output_dir}/server-log-since.txt"
+
+logs_pid=""
+video_pid=""
+inhibitor_pid=""
+exchange_audio_pid=""
+
+cleanup() {
+  local exit_status=$?
+  trap - EXIT INT TERM
+  if [[ -n "$exchange_audio_pid" ]] \
+    && kill -0 "$exchange_audio_pid" 2>/dev/null; then
+    kill -INT "$exchange_audio_pid" 2>/dev/null || true
+    wait "$exchange_audio_pid" 2>/dev/null || true
+  fi
+  for process_id in "$video_pid" "$logs_pid" "$inhibitor_pid"; do
+    if [[ -n "$process_id" ]] && kill -0 "$process_id" 2>/dev/null; then
+      kill -TERM "$process_id" 2>/dev/null || true
+      wait "$process_id" 2>/dev/null || true
+    fi
+  done
+  if ((exit_status != 0)); then
+    if [[ ! -s "$failure_file" ]]; then
+      printf 'release evidence gate failed with exit status %d\n' \
+        "$exit_status" >"$failure_file"
+    fi
+    if [[ ! -s "$final_actions" ]]; then
+      curl \
+        --fail \
+        --silent \
+        --show-error \
+        --max-time 5 \
+        "${ANDY_VOICE_SERVER_URL%/}/actions" \
+        >"$final_actions" 2>/dev/null || true
+    fi
+    if [[ ! -s "${output_dir}/server.log" ]]; then
+      # shellcheck disable=SC2029
+      ssh -F /dev/null -o BatchMode=yes "$ANDY_DIAGNOSTIC_SSH_HOST" \
+        "journalctl _SYSTEMD_USER_UNIT='${ANDY_VOICE_SERVER_SERVICE}' --since='${server_log_since}' --no-pager --output=cat" \
+        >"${output_dir}/server.log" 2>/dev/null || true
+    fi
+    if [[ -s "$video_file" && ! -s "${output_dir}/observation-probe.json" ]]; then
+      ffprobe \
+        -v error \
+        -show_entries stream=index,codec_type,codec_name,width,height,r_frame_rate,sample_rate,channels \
+        -show_entries format=duration \
+        -of json \
+        "$video_file" \
+        >"${output_dir}/observation-probe.json" 2>/dev/null || true
+    fi
+  fi
+  exit "$exit_status"
+}
+trap cleanup EXIT INT TERM
+
+gnome-session-inhibit \
+  --app-id=andy-agent-motion-soak \
+  --reason='Andy spoken fixed-action soak' \
+  --inhibit=idle \
+  --inhibit-only \
+  >"${output_dir}/display-inhibitor.log" 2>&1 &
+inhibitor_pid=$!
+sleep 0.25
+if ! kill -0 "$inhibitor_pid" 2>/dev/null; then
+  wait "$inhibitor_pid"
+fi
+
+gdbus call \
+  --session \
+  --dest org.gnome.ScreenSaver \
+  --object-path /org/gnome/ScreenSaver \
+  --method org.gnome.ScreenSaver.SetActive \
+  false \
+  >/dev/null
+
+"${script_dir}/andy-host-check"
+"${script_dir}/andy-camera-setup" >"${output_dir}/camera-setup.txt"
+"${script_dir}/andy-snapshot" "${output_dir}/before.jpg" >/dev/null
+
+"${script_dir}/andy-logs" >"$device_log" 2>&1 &
+logs_pid=$!
+observation_started_epoch="$(date +%s.%N)"
+date --iso-8601=ns >"${output_dir}/observation-started.txt"
+ffmpeg \
+  -hide_banner \
+  -loglevel warning \
+  -thread_queue_size 1024 \
+  -f v4l2 \
+  -input_format mjpeg \
+  -framerate "$ANDY_CAMERA_FRAME_RATE" \
+  -video_size "$ANDY_CAMERA_VIDEO_SIZE" \
+  -i "$ANDY_CAMERA_DEVICE" \
+  -thread_queue_size 1024 \
+  -f pulse \
+  -i "$ANDY_CAMERA_AUDIO_SOURCE" \
+  -map 0:v:0 \
+  -map 1:a:0 \
+  -vf fps=10 \
+  -c:v libx264 \
+  -preset veryfast \
+  -crf 23 \
+  -c:a flac \
+  -n \
+  "$video_file" \
+  >"${output_dir}/observation.txt" \
+  2>"${output_dir}/observation.log" &
+video_pid=$!
+
+sleep 2
+for process_id in "$logs_pid" "$video_pid"; do
+  if ! kill -0 "$process_id" 2>/dev/null; then
+    wait "$process_id"
+  fi
+done
+
+count_matches() {
+  local pattern="$1"
+  local count
+  count="$(rg -c -- "$pattern" "$device_log" 2>/dev/null || true)"
+  printf '%s\n' "${count:-0}"
+}
+
+wait_for_increase() {
+  local pattern="$1"
+  local baseline="$2"
+  local deadline="$3"
+  local observed
+  while ((SECONDS < deadline)); do
+    observed="$(count_matches "$pattern")"
+    if ((observed > baseline)); then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+wait_for_count() {
+  local pattern="$1"
+  local expected="$2"
+  local deadline="$3"
+  local observed
+  while ((SECONDS < deadline)); do
+    observed="$(count_matches "$pattern")"
+    if ((observed >= expected)); then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+read_actions() {
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --max-time 5 \
+    "${ANDY_VOICE_SERVER_URL%/}/actions"
+}
+
+make_prompt_file() {
+  local prompt_file="$1"
+  local text="$2"
+  local request_json
+  request_json="$(
+    jq -cn \
+      --arg input "$text" \
+      --arg voice "$ANDY_TTS_VOICE" \
+      '{model: "kokoro", input: $input, voice: $voice, response_format: "wav"}'
+  )"
+  curl \
+    --fail \
+    --silent \
+    --show-error \
+    --max-time 30 \
+    --output "$prompt_file" \
+    --header 'Content-Type: application/json' \
+    --data "$request_json" \
+    "${ANDY_TTS_URL%/}/v1/audio/speech"
+}
+
+make_prompt() {
+  local label="$1"
+  local text="$2"
+  make_prompt_file "${output_dir}/prompt-${label}.wav" "$text"
+}
+
+if [[ "$profile" == release ]]; then
+  make_prompt speech \
+    'Andy, answer this arithmetic question in one word. What is two plus two?'
+  make_prompt right \
+    'Please turn your head to the right by thirty degrees.'
+  make_prompt nod 'Please say yes with your head.'
+  make_prompt dance 'Please show me a dance.'
+else
+  make_prompt yaw 'Andy, move your head on the yaw axis positive by ten degrees.'
+  make_prompt home 'Andy, return your head to the calibrated home position.'
+  make_prompt pitch 'Andy, move your head on the pitch axis positive by ten degrees.'
+  make_prompt reject 'Andy, move your yaw axis positive by twenty degrees.'
+  make_prompt chat 'Andy, what color is the sky?'
+fi
+
+wait_for_action_result() {
+  local result_kind="$1"
+  local expected_action="$2"
+  local expected_steps="$3"
+  local before_file="$4"
+  local deadline="$5"
+  local snapshot_file="${output_dir}/actions-current.json"
+  while ((SECONDS < deadline)); do
+    if read_actions >"$snapshot_file" 2>/dev/null; then
+      if [[ "$result_kind" == accepted ]]; then
+        if jq -e \
+          --arg action "$expected_action" \
+          --argjson expected_steps "$expected_steps" \
+          --slurpfile before "$before_file" \
+          '
+            .state == "completed"
+            and .last_action == $action
+            and .requests == ($before[0].requests + 1)
+            and .rejections == $before[0].rejections
+            and .completions == ($before[0].completions + 1)
+            and .failures == $before[0].failures
+            and .device.motion_starts == ($before[0].device.motion_starts + $expected_steps)
+            and .device.motion_completions == ($before[0].device.motion_completions + $expected_steps)
+            and .device.motion_faults == $before[0].device.motion_faults
+            and (.device.motion_active == false)
+            and (.device.motion_state | startswith("complete:"))
+            and (.device.motion_state | contains("torque=0/0"))
+          ' \
+          "$snapshot_file" \
+          >/dev/null; then
+          return 0
+        fi
+      elif [[ "$result_kind" == rejected ]]; then
+        if jq -e \
+          --slurpfile before "$before_file" \
+          '
+            .state == "rejected"
+            and .last_action == null
+            and .requests == $before[0].requests
+            and .rejections == ($before[0].rejections + 1)
+            and .completions == $before[0].completions
+            and .failures == $before[0].failures
+            and .device.motion_starts == $before[0].device.motion_starts
+            and .device.motion_completions == $before[0].device.motion_completions
+            and .device.motion_faults == $before[0].device.motion_faults
+            and (.device.motion_active == false)
+          ' \
+          "$snapshot_file" \
+          >/dev/null; then
+          return 0
+        fi
+      else
+        if jq -e \
+          --slurpfile before "$before_file" \
+          '
+            .requests == $before[0].requests
+            and .rejections == $before[0].rejections
+            and .completions == $before[0].completions
+            and .failures == $before[0].failures
+            and .device.motion_starts == $before[0].device.motion_starts
+            and .device.motion_completions == $before[0].device.motion_completions
+            and .device.motion_faults == $before[0].device.motion_faults
+            and (.device.motion_active == false)
+          ' \
+          "$snapshot_file" \
+          >/dev/null; then
+          return 0
+        fi
+      fi
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+printf 'attempt\tcycle\tkind\tlabel\taction\texpected_steps\troom_audio\tresult\n' \
+  >"$attempt_log"
+printf 'attempt\tcycle\tlabel\tprompt_start_utc\tprompt_end_utc\tvideo_start_s\tvideo_end_s\n' \
+  >"$timeline_log"
+attempt=0
+room_audio_passes=0
+room_audio_failures=0
+
+run_attempt() {
+  local cycle="$1"
+  local kind="$2"
+  local label="$3"
+  local action="$4"
+  local expected_steps="$5"
+  local expected_word_one="${6:-}"
+  local expected_word_two="${7:-}"
+  local before_file
+  local turn_end_before
+  local turn_start_before
+  local speech_before
+  local announcement_finish_before
+  local amplifier_start_before
+  local amplifier_idle_before
+  local deadline
+  local exchange_audio_file=""
+  local response_audio_file=""
+  local response_result_file=""
+  local exchange_started_epoch=""
+  local prompt_started_epoch
+  local prompt_started_utc
+  local prompt_ended_epoch
+  local prompt_ended_utc
+  local attempt_ended_epoch
+  local video_start_seconds
+  local video_end_seconds
+  local response_search_seconds
+  local room_audio_result="not-required"
+  local -a room_audio_check_args
+
+  attempt=$((attempt + 1))
+  before_file="${output_dir}/actions-attempt-${attempt}-before.json"
+  read_actions >"$before_file"
+  turn_end_before="$(count_matches 'Voice turn ended \(count=')"
+  turn_start_before="$(count_matches 'Voice turn started \(count=')"
+  speech_before="$(count_matches 'Speech detected \(count=')"
+  announcement_finish_before="$(count_matches 'Announcement finished \(count=')"
+  amplifier_start_before="$(count_matches 'Amplifier required \(count=')"
+  amplifier_idle_before="$(count_matches 'Amplifier idle \(count=')"
+  deadline=$((SECONDS + event_timeout))
+
+  printf 'Agent attempt %d: cycle %d, %s\n' "$attempt" "$cycle" "$label"
+  if ! wait_for_increase \
+    'Voice turn started \(count=' "$turn_start_before" "$deadline"; then
+    printf 'Timed out waiting for a fresh passive turn: %s\n' "$label" >&2
+    printf 'attempt %d (%s): timed out waiting for a fresh passive turn\n' \
+      "$attempt" "$label" >"$failure_file"
+    return 1
+  fi
+
+  if [[ "$profile" == release ]]; then
+    exchange_audio_file="${output_dir}/exchange-${attempt}-${label}.wav"
+    response_audio_file="${output_dir}/response-${attempt}-${label}.wav"
+    response_result_file="${output_dir}/response-${attempt}-${label}.json"
+    exchange_started_epoch="$(date +%s.%N)"
+    ffmpeg \
+      -hide_banner \
+      -loglevel warning \
+      -thread_queue_size 1024 \
+      -f pulse \
+      -i "$ANDY_CAMERA_AUDIO_SOURCE" \
+      -ac 1 \
+      -ar 48000 \
+      -c:a pcm_s16le \
+      -t "$event_timeout" \
+      -n \
+      "$exchange_audio_file" \
+      >"${output_dir}/exchange-${attempt}-${label}.txt" \
+      2>"${output_dir}/exchange-${attempt}-${label}.log" &
+    exchange_audio_pid=$!
+    sleep 0.25
+    if ! kill -0 "$exchange_audio_pid" 2>/dev/null; then
+      wait "$exchange_audio_pid"
+    fi
+  fi
+
+  prompt_started_epoch="$(date +%s.%N)"
+  prompt_started_utc="$(date --iso-8601=ns)"
+  ANDY_PLAYBACK_GAIN="$ANDY_TTS_PLAYBACK_GAIN" \
+    "${script_dir}/andy-play" "${output_dir}/prompt-${label}.wav"
+  prompt_ended_epoch="$(date +%s.%N)"
+  prompt_ended_utc="$(date --iso-8601=ns)"
+
+  if ! wait_for_increase \
+    'Speech detected \(count=' "$speech_before" "$deadline"; then
+    printf 'Timed out waiting for speech detection: %s\n' "$label" >&2
+    printf 'attempt %d (%s): timed out waiting for speech detection\n' \
+      "$attempt" "$label" >"$failure_file"
+    return 1
+  fi
+  if ! wait_for_increase \
+    'Voice turn ended \(count=' "$turn_end_before" "$deadline"; then
+    printf 'Timed out waiting for the voice turn to end: %s\n' "$label" >&2
+    printf 'attempt %d (%s): timed out waiting for the voice turn to end\n' \
+      "$attempt" "$label" >"$failure_file"
+    return 1
+  fi
+  if ! wait_for_increase \
+    'Announcement finished \(count=' "$announcement_finish_before" "$deadline"; then
+    printf 'Timed out waiting for the announcement to finish: %s\n' "$label" >&2
+    printf 'attempt %d (%s): timed out waiting for announcement finish\n' \
+      "$attempt" "$label" >"$failure_file"
+    return 1
+  fi
+  if ! wait_for_increase \
+    'Amplifier required \(count=' "$amplifier_start_before" "$deadline"; then
+    printf 'Timed out waiting for amplifier start: %s\n' "$label" >&2
+    printf 'attempt %d (%s): timed out waiting for amplifier start\n' \
+      "$attempt" "$label" >"$failure_file"
+    return 1
+  fi
+  if ! wait_for_increase \
+    'Amplifier idle \(count=' "$amplifier_idle_before" "$deadline"; then
+    printf 'Timed out waiting for amplifier idle: %s\n' "$label" >&2
+    printf 'attempt %d (%s): timed out waiting for amplifier idle\n' \
+      "$attempt" "$label" >"$failure_file"
+    return 1
+  fi
+  if ! wait_for_action_result \
+    "$kind" "$action" "$expected_steps" "$before_file" "$deadline"; then
+    printf 'Timed out waiting for the action result: %s\n' "$label" >&2
+    printf 'attempt %d (%s): timed out waiting for action result\n' \
+      "$attempt" "$label" >"$failure_file"
+    return 1
+  fi
+
+  attempt_ended_epoch="$(date +%s.%N)"
+  if [[ "$profile" == release ]]; then
+    if kill -0 "$exchange_audio_pid" 2>/dev/null; then
+      kill -INT "$exchange_audio_pid" 2>/dev/null || true
+    fi
+    wait "$exchange_audio_pid" 2>/dev/null || true
+    exchange_audio_pid=""
+
+    # Keep a two-second pre-roll because the robot may begin responding while
+    # the HDMI prompt stream is draining. The required reply word pairs are
+    # deliberately absent from their corresponding prompts.
+    response_search_seconds="$(
+      awk \
+        -v prompt_end="$prompt_ended_epoch" \
+        -v exchange_start="$exchange_started_epoch" \
+        'BEGIN {
+          start = prompt_end - exchange_start - 2.0
+          if (start < 0) start = 0
+          printf "%.3f", start
+        }'
+    )"
+    ffmpeg \
+      -hide_banner \
+      -loglevel error \
+      -ss "$response_search_seconds" \
+      -i "$exchange_audio_file" \
+      -vn \
+      -ac 1 \
+      -ar 48000 \
+      -c:a pcm_s16le \
+      -n \
+      "$response_audio_file"
+    room_audio_check_args=(
+      --input "$response_audio_file"
+      --output "$response_result_file"
+      --expect-word "$expected_word_one"
+    )
+    if [[ -n "$expected_word_two" ]]; then
+      room_audio_check_args+=(--expect-word "$expected_word_two")
+    fi
+    if "${script_dir}/andy-room-audio-check" \
+      "${room_audio_check_args[@]}"; then
+      room_audio_result="pass"
+      room_audio_passes=$((room_audio_passes + 1))
+    else
+      room_audio_result="fail"
+      room_audio_failures=$((room_audio_failures + 1))
+    fi
+  fi
+
+  video_start_seconds="$(
+    awk \
+      -v event_start="$prompt_started_epoch" \
+      -v observation_start="$observation_started_epoch" \
+      'BEGIN {
+        start = event_start - observation_start - 0.5
+        if (start < 0) start = 0
+        printf "%.3f", start
+      }'
+  )"
+  video_end_seconds="$(
+    awk \
+      -v event_end="$attempt_ended_epoch" \
+      -v observation_start="$observation_started_epoch" \
+      'BEGIN { printf "%.3f", event_end - observation_start + 0.5 }'
+  )"
+  printf '%d\t%d\t%s\t%s\t%s\t%s\t%s\n' \
+    "$attempt" "$cycle" "$label" "$prompt_started_utc" "$prompt_ended_utc" \
+    "$video_start_seconds" "$video_end_seconds" \
+    >>"$timeline_log"
+  printf '%d\t%d\t%s\t%s\t%s\t%d\t%s\t%s\n' \
+    "$attempt" "$cycle" "$kind" "$label" "$action" "$expected_steps" \
+    "$room_audio_result" \
+    "$([[ "$room_audio_result" == fail ]] && printf fail || printf pass)" \
+    >>"$attempt_log"
+  if [[ "$room_audio_result" == fail ]]; then
+    printf 'attempt %d (%s): onboard reply failed the room-audio gate\n' \
+      "$attempt" "$label" >"$failure_file"
+    return 1
+  fi
+  sleep 1
+}
+
+for ((cycle = 1; cycle <= cycles; cycle++)); do
+  if [[ "$profile" == release ]]; then
+    run_attempt "$cycle" chat speech none 0 four
+    printf 'Onboard speech gate passed; beginning full release motions.\n'
+    run_attempt "$cycle" accepted right look_right 2 look right
+    run_attempt "$cycle" accepted nod nod_yes 4 yes nod
+    run_attempt "$cycle" accepted dance dance 8 dance time
+  else
+    run_attempt "$cycle" accepted yaw yaw_positive_10 1
+    run_attempt "$cycle" accepted home home 1
+    run_attempt "$cycle" accepted pitch pitch_positive_10 1
+    run_attempt "$cycle" accepted home home 1
+    run_attempt "$cycle" rejected reject none 0
+    run_attempt "$cycle" chat chat none 0
+  fi
+done
+
+if [[ "$profile" == release ]]; then
+  expected_command_turns=$((cycles * 4))
+else
+  expected_command_turns=$((cycles * 6))
+fi
+passive_start_before="$(count_matches 'Voice turn started \(count=')"
+follow_up_deadline=$((SECONDS + event_timeout))
+if ! wait_for_count \
+  'Voice turn ended \(count=' "$expected_command_turns" \
+  "$follow_up_deadline"; then
+  printf 'Timed out waiting for the command turns to close.\n' >&2
+  printf 'timed out waiting for command turns to close\n' >"$failure_file"
+  exit 1
+fi
+if ! wait_for_increase \
+  'Voice turn started \(count=' "$passive_start_before" \
+  "$follow_up_deadline"; then
+  printf 'Timed out waiting for passive listening to resume.\n' >&2
+  printf 'timed out waiting for passive listening to resume\n' >"$failure_file"
+  exit 1
+fi
+sleep 1
+read_actions >"$final_actions"
+
+if kill -0 "$video_pid" 2>/dev/null; then
+  kill -INT "$video_pid" 2>/dev/null || true
+  wait "$video_pid" 2>/dev/null || true
+fi
+video_pid=""
+
+observation_probe_file="${output_dir}/observation-probe.json"
+ffprobe \
+  -v error \
+  -show_entries stream=index,codec_type,codec_name,width,height,r_frame_rate,sample_rate,channels \
+  -show_entries format=duration \
+  -of json \
+  "$video_file" \
+  >"$observation_probe_file"
+observation_probe_pass=0
+if jq -e \
+  'any(.streams[];
+     .codec_type == "video"
+     and .codec_name == "h264"
+     and .width == 1920
+     and .height == 1080
+     and .r_frame_rate == "10/1")
+   and any(.streams[];
+     .codec_type == "audio"
+     and .codec_name == "flac"
+     and .sample_rate == "48000"
+     and .channels == 2)
+   and (.format.duration | tonumber) > 1' \
+  "$observation_probe_file" \
+  >/dev/null; then
+  observation_probe_pass=1
+fi
+
+visual_contact_sheet_count=0
+while IFS=$'\t' read -r \
+  timeline_attempt _timeline_cycle timeline_label \
+  _timeline_prompt_start _timeline_prompt_end \
+  video_start_seconds video_end_seconds; do
+  contact_duration="$(
+    awk \
+      -v start="$video_start_seconds" \
+      -v end="$video_end_seconds" \
+      'BEGIN { printf "%.3f", end - start }'
+  )"
+  contact_sheet="${output_dir}/visual-${timeline_attempt}-${timeline_label}.jpg"
+  if awk -v duration="$contact_duration" 'BEGIN { exit !(duration > 0.5) }' \
+    && ffmpeg \
+      -hide_banner \
+      -loglevel error \
+      -nostdin \
+      -ss "$video_start_seconds" \
+      -t "$contact_duration" \
+      -i "$video_file" \
+      -an \
+      -vf "fps=20/${contact_duration},scale=320:-1,tile=5x4:nb_frames=20:padding=4:margin=4" \
+      -frames:v 1 \
+      -c:v mjpeg \
+      -q:v 3 \
+      -n \
+      "$contact_sheet" \
+    && [[ -s "$contact_sheet" ]]; then
+    visual_contact_sheet_count=$((visual_contact_sheet_count + 1))
+  fi
+done < <(tail -n +2 "$timeline_log")
+
+"${script_dir}/andy-snapshot" "${output_dir}/after.jpg" >/dev/null
+
+disconnect_count="$(count_matches 'Disconnected from API|Connection lost|on_client_disconnected')"
+kill -TERM "$logs_pid" 2>/dev/null || true
+wait "$logs_pid" 2>/dev/null || true
+logs_pid=""
+
+# The validated timestamp must remain quoted when the command crosses SSH.
+# shellcheck disable=SC2029
+ssh -F /dev/null -o BatchMode=yes "$ANDY_DIAGNOSTIC_SSH_HOST" \
+  "journalctl _SYSTEMD_USER_UNIT='${ANDY_VOICE_SERVER_SERVICE}' --since='${server_log_since}' --no-pager --output=cat" \
+  >"${output_dir}/server.log"
+
+if [[ "$profile" == release ]]; then
+  expected_actions=$((cycles * 3))
+  expected_motion_steps=$((cycles * 14))
+  expected_rejections=0
+  expected_turns=$((cycles * 4))
+  expected_deterministic_decisions=$((cycles * 3))
+else
+  expected_actions=$((cycles * 4))
+  expected_motion_steps=$((cycles * 4))
+  expected_rejections="$cycles"
+  expected_turns=$((cycles * 6))
+  expected_deterministic_decisions=$((cycles * 5))
+fi
+expected_turn_ends="$expected_turns"
+action_request_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.requests - $before[0].requests' "$final_actions"
+)"
+action_completion_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.completions - $before[0].completions' "$final_actions"
+)"
+action_rejection_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.rejections - $before[0].rejections' "$final_actions"
+)"
+action_failure_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.failures - $before[0].failures' "$final_actions"
+)"
+motion_start_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.device.motion_starts - $before[0].device.motion_starts' "$final_actions"
+)"
+motion_completion_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.device.motion_completions - $before[0].device.motion_completions' "$final_actions"
+)"
+motion_fault_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.device.motion_faults - $before[0].device.motion_faults' "$final_actions"
+)"
+turn_start_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.device.turn_starts - $before[0].device.turn_starts' "$final_actions"
+)"
+speech_detection_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.device.speech_detections - $before[0].device.speech_detections' "$final_actions"
+)"
+turn_end_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.device.turn_ends - $before[0].device.turn_ends' "$final_actions"
+)"
+voice_error_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.device.voice_errors - $before[0].device.voice_errors' "$final_actions"
+)"
+capture_pause_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.device.capture_pauses - $before[0].device.capture_pauses' "$final_actions"
+)"
+announcement_start_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.device.announcement_starts - $before[0].device.announcement_starts' "$final_actions"
+)"
+announcement_finish_delta="$(
+  jq -r --slurpfile before "$initial_actions" \
+    '.device.announcement_finishes - $before[0].device.announcement_finishes' "$final_actions"
+)"
+speech_while_announcing_count="$(
+  awk '
+    /Announcement started \(count=/ { announcing = 1; next }
+    /Announcement finished \(count=/ { announcing = 0; next }
+    announcing && /Speech detected \(count=/ { count++ }
+    END { print count + 0 }
+  ' "$device_log"
+)"
+firmware_error_count="$(count_matches '\[E\]\[')"
+firmware_warning_count="$(count_matches '\[W\]\[')"
+expected_lifecycle_warning_count="$(
+  count_matches '(esp_audio_stack\.(speaker|microphone)|speaker\.media_player|resume_continuous_listening|script) took a long time for an operation'
+)"
+unexpected_warning_count="$(
+  awk '
+    /\[W\]\[/ && !/(esp_audio_stack\.(speaker|microphone)|speaker\.media_player|resume_continuous_listening|script) took a long time for an operation/ {
+      count++
+    }
+    END { print count + 0 }
+  ' "$device_log"
+)"
+server_error_count="$(
+  rg -c 'ERROR|Traceback|turn failed|provider timed out|fixed motion failed' \
+    "${output_dir}/server.log" 2>/dev/null || true
+)"
+server_log_line_count="$(awk 'END { print NR + 0 }' "${output_dir}/server.log")"
+server_asr_accept_count="$(
+  rg -c 'ASR accepted transcript' "${output_dir}/server.log" 2>/dev/null || true
+)"
+server_deterministic_decision_count="$(
+  rg -c 'deterministic calibrated request resolved' \
+    "${output_dir}/server.log" 2>/dev/null || true
+)"
+server_response_synthesized_count="$(
+  rg -c 'response synthesized:' "${output_dir}/server.log" 2>/dev/null || true
+)"
+server_motion_accept_count="$(
+  rg -c 'motion decision accepted:' "${output_dir}/server.log" 2>/dev/null || true
+)"
+server_motion_completion_count="$(
+  rg -c 'fixed motion completed:' "${output_dir}/server.log" 2>/dev/null || true
+)"
+
+server_asr_accept_count="${server_asr_accept_count:-0}"
+server_deterministic_decision_count="${server_deterministic_decision_count:-0}"
+server_response_synthesized_count="${server_response_synthesized_count:-0}"
+server_motion_accept_count="${server_motion_accept_count:-0}"
+server_motion_completion_count="${server_motion_completion_count:-0}"
+
+speaker_playing_count="$(
+  count_matches "'Andy speaker' >> PLAYING"
+)"
+speaker_idle_count="$(
+  count_matches "'Andy speaker' >> IDLE"
+)"
+amplifier_start_count="$(
+  count_matches 'Amplifier required \(count='
+)"
+amplifier_idle_count="$(
+  count_matches 'Amplifier idle \(count='
+)"
+
+{
+  printf 'profile=%s\n' "$profile"
+  printf 'cycles=%d\n' "$cycles"
+  printf 'turns=%d\n' "$expected_turns"
+  printf 'action_requests=%s\n' "$action_request_delta"
+  printf 'action_completions=%s\n' "$action_completion_delta"
+  printf 'action_rejections=%s\n' "$action_rejection_delta"
+  printf 'action_failures=%s\n' "$action_failure_delta"
+  printf 'motion_starts=%s\n' "$motion_start_delta"
+  printf 'motion_completions=%s\n' "$motion_completion_delta"
+  printf 'motion_faults=%s\n' "$motion_fault_delta"
+  printf 'turn_starts=%s\n' "$turn_start_delta"
+  printf 'speech_detections=%s\n' "$speech_detection_delta"
+  printf 'turn_ends=%s\n' "$turn_end_delta"
+  printf 'voice_errors=%s\n' "$voice_error_delta"
+  printf 'capture_pauses=%s\n' "$capture_pause_delta"
+  printf 'announcement_starts=%s\n' "$announcement_start_delta"
+  printf 'announcement_finishes=%s\n' "$announcement_finish_delta"
+  printf 'speaker_playing=%s\n' "$speaker_playing_count"
+  printf 'speaker_idle=%s\n' "$speaker_idle_count"
+  printf 'amplifier_starts=%s\n' "$amplifier_start_count"
+  printf 'amplifier_idles=%s\n' "$amplifier_idle_count"
+  printf 'room_audio_replies=%s\n' "$room_audio_passes"
+  printf 'room_audio_failures=%s\n' "$room_audio_failures"
+  printf 'observation_probe_pass=%s\n' "$observation_probe_pass"
+  printf 'visual_contact_sheets=%s\n' "$visual_contact_sheet_count"
+  printf 'visual_review_required=true\n'
+  printf 'speech_while_announcing=%s\n' "$speech_while_announcing_count"
+  printf 'firmware_errors=%s\n' "$firmware_error_count"
+  printf 'firmware_warnings=%s\n' "$firmware_warning_count"
+  printf 'expected_lifecycle_warnings=%s\n' "$expected_lifecycle_warning_count"
+  printf 'unexpected_firmware_warnings=%s\n' "$unexpected_warning_count"
+  printf 'api_disconnects=%s\n' "$disconnect_count"
+  printf 'server_errors=%s\n' "${server_error_count:-0}"
+  printf 'server_log_lines=%s\n' "$server_log_line_count"
+  printf 'server_asr_accepts=%s\n' "$server_asr_accept_count"
+  printf 'server_deterministic_decisions=%s\n' \
+    "$server_deterministic_decision_count"
+  printf 'server_responses_synthesized=%s\n' \
+    "$server_response_synthesized_count"
+  printf 'server_motion_accepts=%s\n' "$server_motion_accept_count"
+  printf 'server_motion_completions=%s\n' "$server_motion_completion_count"
+  printf 'final_motion_active=%s\n' "$(jq -r '.device.motion_active' "$final_actions")"
+  printf 'final_motion_inhibited=%s\n' "$(jq -r '.device.motion_inhibited' "$final_actions")"
+  printf 'final_voice_state=%s\n' "$(jq -r '.device.voice_state' "$final_actions")"
+  printf 'final_motion_state=%s\n' "$(jq -r '.device.motion_state' "$final_actions")"
+} >"$summary_file"
+
+printf 'Agent motion soak artifacts: %s\n' "$output_dir"
+cat "$summary_file"
+
+if ! (
+  ((action_request_delta == expected_actions)) \
+    && ((action_completion_delta == expected_actions)) \
+    && ((action_rejection_delta == expected_rejections)) \
+    && ((action_failure_delta == 0)) \
+    && ((motion_start_delta == expected_motion_steps)) \
+    && ((motion_completion_delta == expected_motion_steps)) \
+    && ((motion_fault_delta == 0)) \
+    && ((turn_start_delta >= expected_turns)) \
+    && ((speech_detection_delta >= expected_turns)) \
+    && ((turn_end_delta >= expected_turn_ends)) \
+    && ((voice_error_delta == 0)) \
+    && ((capture_pause_delta == expected_turns)) \
+    && ((announcement_start_delta == expected_turns)) \
+    && ((announcement_finish_delta == expected_turns)) \
+    && ((speaker_playing_count == expected_turns)) \
+    && ((speaker_idle_count == expected_turns)) \
+    && ((amplifier_start_count == expected_turns)) \
+    && ((amplifier_idle_count == expected_turns)) \
+    && { [[ "$profile" != release ]] \
+      || { ((room_audio_passes == expected_turns)) \
+        && ((room_audio_failures == 0)); }; } \
+    && ((observation_probe_pass == 1)) \
+    && ((visual_contact_sheet_count == expected_turns)) \
+    && ((speech_while_announcing_count == 0)) \
+    && ((firmware_error_count == 0)) \
+    && ((unexpected_warning_count == 0)) \
+    && ((disconnect_count == 0)) \
+    && ((server_error_count == 0)) \
+    && ((server_log_line_count > 0)) \
+    && ((server_asr_accept_count >= expected_turns)) \
+    && ((server_deterministic_decision_count == expected_deterministic_decisions)) \
+    && ((server_response_synthesized_count == expected_turns)) \
+    && ((server_motion_accept_count == expected_actions)) \
+    && ((server_motion_completion_count == expected_actions)) \
+    && jq -e \
+      '(.device.motion_active == false)
+       and (.device.motion_inhibited == false)
+       and (.device.voice_state == "listening" or .device.voice_state == "speech detected")
+       and (.device.motion_faults >= 0)
+       and (.device.motion_state | startswith("complete:"))
+       and (.device.motion_state | contains("torque=0/0"))' \
+      "$final_actions" \
+      >/dev/null
+); then
+  printf 'one or more release evidence gates failed; inspect summary.txt\n' \
+    >"$failure_file"
+  exit 1
+fi

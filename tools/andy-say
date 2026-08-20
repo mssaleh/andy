@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/andy-lab-common.sh
+source "${script_dir}/andy-lab-common.sh"
+
+if (($# == 0)); then
+  printf 'Usage: %s text to speak\n' "$0" >&2
+  exit 2
+fi
+
+andy_require_command curl
+andy_require_command jq
+andy_require_command mktemp
+andy_require_decimal ANDY_TTS_PLAYBACK_GAIN "$ANDY_TTS_PLAYBACK_GAIN"
+
+spoken_text="$*"
+if [[ ! "$spoken_text" =~ [^[:space:]] ]]; then
+  printf 'Speech text cannot be empty.\n' >&2
+  exit 2
+fi
+raw_audio="$(mktemp --tmpdir --suffix=.wav andy-tts.XXXXXX)"
+trap 'rm -f -- "$raw_audio"' EXIT
+
+request_json="$(
+  jq -cn \
+    --arg input "$spoken_text" \
+    --arg voice "$ANDY_TTS_VOICE" \
+    '{model: "kokoro", input: $input, voice: $voice, response_format: "wav"}'
+)"
+
+curl \
+  --fail \
+  --silent \
+  --show-error \
+  --max-time 30 \
+  --output "$raw_audio" \
+  --header 'Content-Type: application/json' \
+  --data "$request_json" \
+  "${ANDY_TTS_URL%/}/v1/audio/speech"
+
+ANDY_PLAYBACK_GAIN="$ANDY_TTS_PLAYBACK_GAIN" \
+  "${script_dir}/andy-play" "$raw_audio"

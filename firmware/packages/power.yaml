@@ -1,0 +1,42 @@
+# Battery and power telemetry.
+#
+# Two independent monitors: the AXP2101 reports the CoreS3 side of the 550 mAh
+# cell, and the INA226 on the body power board measures what the whole robot
+# actually draws. Both are slow-rate on purpose. The internal I2C bus is shared
+# with the audio codecs and the LED bar, and `motion.yaml` runs a 25 ms safety
+# supervisor that must not queue behind a telemetry read.
+
+sensor:
+  - platform: axp2101
+    id: core_power
+    update_interval: 60s
+    battery_level:
+      name: Battery level
+      filters:
+        - delta: 1.0
+    battery_voltage:
+      name: Battery voltage
+    axp_temperature:
+      name: PMIC temperature
+    battery_charging:
+      name: Battery charging
+
+  # Body power board monitor. The 0.01 ohm shunt and 3.2 A ceiling are the
+  # vendor's values for this board.
+  - platform: ina226
+    id: body_power
+    i2c_id: bus_internal
+    address: 0x41
+    shunt_resistance: 0.01 ohm
+    max_current: 3.2A
+    adc_time: 140us
+    adc_averaging: 128
+    update_interval: 60s
+    current:
+      name: Body current
+    power:
+      name: Body power
+    bus_voltage:
+      name: Body bus voltage
+    shunt_voltage:
+      name: Body shunt voltage

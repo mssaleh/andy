@@ -1,0 +1,174 @@
+# What the weather is doing where Andy is.
+#
+# Andy already works out his own position, so the question "what is it like
+# outside?" is answerable without anyone configuring a city. `wttr.in` takes
+# coordinates and will answer in whatever shape is asked for, so it is asked
+# for five fields separated by bars rather than for JSON: the whole reply is
+# about thirty bytes and needs no parser on a device with this much memory.
+#
+#   Haze|+32°C|+40°C|74%|↗12km/h
+#   condition | temperature | feels like | humidity | wind
+#
+# Nothing is published until the position is known, for the same reason the sun
+# publishes nothing: weather for latitude zero is weather in the Gulf of
+# Guinea, and a plausible wrong answer is worse than none.
+#
+# Half an hour between readings. Weather does not move faster than that in any
+# way a desk robot needs to report, and the service is a free one that should
+# not be hammered.
+
+globals:
+  - id: weather_known
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+sensor:
+  - platform: template
+    id: outside_temperature
+    name: Outside temperature
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    id: outside_feels_like
+    name: Outside feels like
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    id: outside_humidity
+    name: Outside humidity
+    unit_of_measurement: "%"
+    device_class: humidity
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: never
+
+text_sensor:
+  - platform: template
+    id: weather_condition
+    name: Weather condition
+    update_interval: never
+
+  - platform: template
+    id: weather_summary
+    name: Weather summary
+    update_interval: never
+
+button:
+  - platform: template
+    name: Check the weather
+    entity_category: diagnostic
+    on_press:
+      - script.execute: read_the_weather
+
+script:
+  - id: read_the_weather
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: return id(location_known).state;
+          then:
+            - http_request.get:
+                url: !lambda |-
+                  char url[160];
+                  snprintf(url, sizeof(url),
+                           "https://wttr.in/%.4f,%.4f?format=%%C|%%t|%%f|%%h|%%w&m",
+                           id(known_latitude), id(known_longitude));
+                  return std::string(url);
+                capture_response: true
+                max_response_buffer_size: 512
+                on_response:
+                  then:
+                    - lambda: |-
+                        if (response->status_code != 200) {
+                          ESP_LOGW("andy.weather", "wttr.in returned %d",
+                                   response->status_code);
+                          return;
+                        }
+                        // Five fields separated by bars. Anything else is the
+                        // service answering with a page rather than a reading,
+                        // which happens when it rate limits.
+                        std::vector<std::string> parts;
+                        size_t start = 0;
+                        for (size_t i = 0; i <= body.size(); i++) {
+                          if (i == body.size() || body[i] == '|') {
+                            parts.push_back(body.substr(start, i - start));
+                            start = i + 1;
+                          }
+                        }
+                        if (parts.size() < 5) {
+                          ESP_LOGW("andy.weather", "unexpected reply of %d bytes",
+                                   (int) body.size());
+                          return;
+                        }
+                        // The numbers carry their units and a sign, and the
+                        // degree sign is multi-byte, so the first signed digit
+                        // run is what is wanted rather than the whole field.
+                        auto first_number = [](const std::string &field) -> float {
+                          size_t i = 0;
+                          while (i < field.size() && field[i] != '-' &&
+                                 field[i] != '+' &&
+                                 !isdigit((unsigned char) field[i])) {
+                            i++;
+                          }
+                          if (i >= field.size()) {
+                            return NAN;
+                          }
+                          return (float) strtol(field.c_str() + i, nullptr, 10);
+                        };
+                        const float temperature = first_number(parts[1]);
+                        const float feels_like = first_number(parts[2]);
+                        const float humidity = first_number(parts[3]);
+                        if (!std::isnan(temperature)) {
+                          id(outside_temperature).publish_state(temperature);
+                        }
+                        if (!std::isnan(feels_like)) {
+                          id(outside_feels_like).publish_state(feels_like);
+                        }
+                        if (!std::isnan(humidity)) {
+                          id(outside_humidity).publish_state(humidity);
+                        }
+                        id(weather_condition).publish_state(parts[0]);
+                        // One line someone would actually say, so the server
+                        // does not have to reassemble it from four numbers.
+                        char spoken[96];
+                        snprintf(spoken, sizeof(spoken),
+                                 "%s, %d degrees, feels like %d, humidity %d%%",
+                                 parts[0].c_str(), (int) temperature,
+                                 (int) feels_like, (int) humidity);
+                        id(weather_summary).publish_state(spoken);
+                        id(weather_known) = true;
+                        ESP_LOGI("andy.weather", "%s", spoken);
+                on_error:
+                  then:
+                    - logger.log:
+                        level: WARN
+                        tag: andy.weather
+                        format: "could not reach the weather service"
+
+interval:
+  # Half an hour once it is answering, and every two minutes until it does, so
+  # a robot that has just found out where it is does not wait half an hour to
+  # know what it is like outside.
+  - interval: 30min
+    then:
+      - script.execute: read_the_weather
+
+  - interval: 2min
+    then:
+      - if:
+          condition:
+            and:
+              - wifi.connected:
+              - lambda: return !id(weather_known);
+          then:
+            - script.execute: read_the_weather

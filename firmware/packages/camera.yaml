@@ -1,0 +1,122 @@
+# The GC0308 camera.
+#
+# Pins and tuning follow the vendor's configuration for this exact product in
+# `../esphome-yaml/examples/kit/stackchan-bsp.factory.yaml`. `setup_priority`
+# runs the camera last so the audio stack claims its internal and DMA memory
+# first; the frame buffer itself lives in PSRAM.
+#
+# A frame reaches the server over the same WireGuard tunnel as everything else,
+# at a measured 243 ms round trip, so anything built on this must be sized for
+# that rather than for a LAN fetch.
+#
+# A camera that photographs a room without saying so is not an acceptable thing
+# to put on someone's desk. The robot therefore shows it itself, from the
+# camera's own delivery callback, with no server involved: the server cannot do
+# this honestly, because by the time a round trip has told the robot to light
+# up, the picture has already been taken. `camera_in_use` carries the same fact
+# over the API for anything that wants to log or react to it.
+#
+# The ring is deliberately not used. A ring write blocks the main loop for
+# 34 ms and is interlocked against motion, so making the camera a second source
+# of ring traffic would buy visibility with the one resource `motion.yaml`
+# cannot spare. The face is the brightest thing on Andy and is already redrawn
+# on every mood change, so the mark goes there.
+
+globals:
+  # When the shutter mark stops being drawn. A frame that arrives while it is
+  # still showing simply extends it, so a burst costs one redraw rather than
+  # one per frame.
+  - id: camera_active_until_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  # What the face is currently showing, so the screen is only redrawn when the
+  # mark actually has to appear or disappear.
+  - id: camera_mark_shown
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+binary_sensor:
+  - platform: template
+    id: camera_in_use
+    name: Camera in use
+    device_class: running
+
+switch:
+  # AW9523B P1_0 holds the GC0308 out of reset.
+  - platform: gpio
+    id: camera_reset
+    internal: true
+    pin:
+      aw9523b_id: aw9523b_hub
+      number: 8
+    restore_mode: ALWAYS_ON
+
+esp32_camera:
+  id: andy_camera
+  name: Andy camera
+  i2c_id: bus_internal
+  setup_priority: -200
+  external_clock:
+    pin: GPIO2
+    frequency: 20MHz
+  vsync_pin:
+    number: GPIO46
+    ignore_strapping_warning: true
+  href_pin: GPIO38
+  pixel_clock_pin:
+    number: GPIO45
+    ignore_strapping_warning: true
+  data_pins: [GPIO39, GPIO40, GPIO41, GPIO42, GPIO15, GPIO16, GPIO48, GPIO47]
+  resolution: 320x240
+  pixel_format: RGB565
+  frame_buffer_count: 1
+  frame_buffer_location: PSRAM
+  max_framerate: 15.0 fps
+  jpeg_quality: 12
+  brightness: 1
+  contrast: 1
+  saturation: 0
+  aec_mode: manual
+  aec_value: 800
+  agc_mode: manual
+  agc_value: 30
+  on_image:
+    # Runs on the main loop, from inside `ESP32Camera::loop()`, which means
+    # everything done here is charged to the camera's own operation window.
+    # Redrawing the face from here measured 268 ms against the component's
+    # 240 ms budget, and the motion supervisor runs every 25 ms, so the frame
+    # only records what happened. The screen is caught up below.
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          const bool already = (int32_t)(now - id(camera_active_until_ms)) < 0;
+          id(camera_active_until_ms) = now + 2500;
+          if (already) {
+            return;
+          }
+          id(camera_in_use).publish_state(true);
+          ESP_LOGI("andy.camera", "shutter: a frame left the robot");
+
+interval:
+  # Bring the face into line with whether the shutter is open, outside the
+  # camera's callback and never during a pose. This is the same rule
+  # `light.yaml` follows for the ring and for the same reason: the main loop
+  # belongs to the motion supervisor while a servo is moving.
+  - interval: 250ms
+    then:
+      - lambda: |-
+          if (id(motion_active)) {
+            return;
+          }
+          const bool open = (int32_t)(millis() - id(camera_active_until_ms)) < 0;
+          if (open == id(camera_mark_shown)) {
+            return;
+          }
+          id(camera_mark_shown) = open;
+          if (!open) {
+            id(camera_in_use).publish_state(false);
+          }
+          id(andy_display).update();

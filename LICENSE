@@ -1,0 +1,68 @@
+MIT License
+
+Copyright (c) 2026 Andy contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+THIRD-PARTY MATERIAL
+================================================================================
+
+The MIT licence above covers the source in this repository. It does not cover
+the third-party material below, which keeps its own terms.
+
+--------------------------------------------------------------------------------
+Face artwork — firmware/faces/*.png
+--------------------------------------------------------------------------------
+
+Designed by rawpixel.com / Freepik — https://www.freepik.com
+
+The 36 face masks in `firmware/faces/` are derived from a Freepik emoji set,
+obtained under a paid Freepik subscription. They are one-bit renderings of the
+original artwork, redrawn for a 320x240 panel.
+
+This attribution must be retained. Anyone redistributing this repository, or
+reusing the artwork from it, keeps the credit to rawpixel.com / Freepik and is
+bound by the Freepik licence terms rather than by the MIT licence above:
+
+  https://www.freepik.com/terms_of_use
+
+If you fork this project for redistribution and cannot meet those terms, replace
+`firmware/faces/` with artwork of your own. Nothing else in the project depends
+on that specific set: `firmware/emotion_profiles.h` addresses the faces by index
+and supplies colour at draw time, so any 36 one-bit masks of the same size work.
+
+--------------------------------------------------------------------------------
+Hardware documentation — knowledge/
+--------------------------------------------------------------------------------
+
+The files under `knowledge/` are M5Stack product documentation, reproduced
+verbatim as a fixed reference for the hardware this firmware drives. They remain
+the property of M5Stack Technology Co., Ltd. and are included for reference only.
+
+  https://docs.m5stack.com
+
+--------------------------------------------------------------------------------
+Vendor components
+--------------------------------------------------------------------------------
+
+The firmware pins external ESPHome components from m5stack/esphome-yaml and from
+n-IA-hane/esphome-audio-stack. They are fetched at build time, not vendored here,
+and carry their own licences.

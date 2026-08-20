@@ -1,0 +1,67 @@
+# Battery-backed time and the WireGuard tunnel to the production server.
+#
+# WireGuard needs a plausible clock before its first handshake, so the BM8563
+# supplies boot time and SNTP writes back to it after every sync. Only the
+# production image includes this package: the tunnel address and key identify
+# this specific robot, and a second device presenting them would collide.
+
+esphome:
+  on_boot:
+    - priority: 500
+      then:
+        - bm8563.read_time:
+            id: wireguard_rtc
+
+time:
+  - platform: bm8563
+    id: wireguard_rtc
+    i2c_id: bus_internal
+    update_interval: never
+
+  - platform: sntp
+    id: wireguard_sntp
+    timezone: Asia/Dubai
+    servers:
+     - 162.159.200.123
+     - 216.239.35.0
+     - 162.159.200.1
+    on_time_sync:
+      then:
+        - bm8563.write_time:
+            id: wireguard_rtc
+
+wireguard:
+  id: andy_wireguard
+  # Bind explicitly to SNTP. Without this the component resolves to the first
+  # declared clock, which is the RTC above.
+  time_id: wireguard_sntp
+  address: !secret wg_address
+  netmask: 255.255.255.0
+  private_key: !secret wg_private_key
+  peer_endpoint: !secret wg_peer_endpoint
+  peer_port: !secret wg_peer_port
+  peer_public_key: !secret wg_peer_public_key
+  peer_persistent_keepalive: 25s
+  peer_allowed_ips:
+    - !secret wg_allowed_ips
+  reboot_timeout: 0s
+  require_connection_to_proceed: false
+
+binary_sensor:
+  - platform: wireguard
+    status:
+      name: "WireGuard Status"
+
+  - platform: wireguard
+    enabled:
+      name: "WireGuard Enabled"
+
+text_sensor:
+  - platform: wireguard
+    address:
+      name: "WireGuard Address"
+
+sensor:
+  - platform: wireguard
+    latest_handshake:
+      name: "WireGuard Latest Handshake"

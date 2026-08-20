@@ -1,0 +1,357 @@
+# Andy's emotional state.
+#
+# Emotion is a state, not a setter. It carries an intensity, a dwell time, and a
+# precedence, and it decays back toward a baseline on its own. A source may only
+# overwrite an emotion of equal or lower precedence, so being shaken cannot be
+# painted over by a cheerful agent one tick later.
+#
+# Every emotion drives all three channels Andy has: the face on the LCD, the
+# status ring, and a motion idiom. `emotion_profiles.h` is the single table that
+# binds them, and `display.yaml` and `light.yaml` read from it rather than
+# holding opinions of their own.
+#
+# The `Emotion` select is the addressable surface. Like the motion catalog it is
+# a closed allowlist: the agent picks a name that exists or nothing happens. It
+# can never supply a colour, a mask, or an angle.
+
+esphome:
+  includes:
+    - emotion_profiles.h
+  on_boot:
+    - priority: -210
+      then:
+        - script.execute:
+            id: set_emotion
+            index: 24
+            intensity: 40
+            hold: 0
+            priority: 0
+
+image:
+  - file: faces/face_00.png
+    id: face_00
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_01.png
+    id: face_01
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_02.png
+    id: face_02
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_03.png
+    id: face_03
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_04.png
+    id: face_04
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_05.png
+    id: face_05
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_06.png
+    id: face_06
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_07.png
+    id: face_07
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_08.png
+    id: face_08
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_09.png
+    id: face_09
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_10.png
+    id: face_10
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_11.png
+    id: face_11
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_12.png
+    id: face_12
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_13.png
+    id: face_13
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_14.png
+    id: face_14
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_15.png
+    id: face_15
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_16.png
+    id: face_16
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_17.png
+    id: face_17
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_18.png
+    id: face_18
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_19.png
+    id: face_19
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_20.png
+    id: face_20
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_21.png
+    id: face_21
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_22.png
+    id: face_22
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_23.png
+    id: face_23
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_24.png
+    id: face_24
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_25.png
+    id: face_25
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_26.png
+    id: face_26
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_27.png
+    id: face_27
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_28.png
+    id: face_28
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_29.png
+    id: face_29
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_30.png
+    id: face_30
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_31.png
+    id: face_31
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_32.png
+    id: face_32
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_33.png
+    id: face_33
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_34.png
+    id: face_34
+    type: BINARY
+    resize: 220x220
+  - file: faces/face_35.png
+    id: face_35
+    type: BINARY
+    resize: 220x220
+
+globals:
+  - id: emotion_index
+    type: uint8_t
+    restore_value: false
+    initial_value: "24"
+  - id: emotion_intensity
+    type: int
+    restore_value: false
+    initial_value: "40"
+  - id: emotion_priority
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"
+  - id: emotion_hold_until_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+select:
+  - platform: template
+    id: emotion_select
+    name: Emotion
+    optimistic: true
+    restore_value: false
+    initial_option: neutral
+    options:
+      - happy
+      - joyful
+      - sleepy
+      - blank
+      - overwhelmed
+      - frustrated
+      - sad
+      - grimacing
+      - flustered
+      - angry
+      - cool
+      - disappointed
+      - shocked
+      - mischievous
+      - unhappy
+      - loving
+      - furious
+      - distressed
+      - laughing
+      - pained
+      - shy
+      - awkward
+      - wailing
+      - unwell
+      - neutral
+      - unimpressed
+      - delighted
+      - anguished
+      - content
+      - surprised
+      - yawning
+      - gleeful
+      - grumpy
+      - playful
+      - deadpan
+      - puzzled
+    on_value:
+      - lambda: |-
+          const auto slot = id(emotion_select).active_index();
+          if (!slot.has_value()) return;
+          const uint8_t index = static_cast<uint8_t>(slot.value());
+          if (index == id(emotion_index)) return;
+          id(set_emotion)->execute(index, id(emotion_target_intensity).state,
+                                   andy::EMOTIONS[index].hold_s, andy::P_AGENT);
+
+number:
+  - platform: template
+    id: emotion_target_intensity
+    name: Emotion intensity
+    optimistic: true
+    restore_value: false
+    initial_value: 70
+    min_value: 0
+    max_value: 100
+    step: 5
+    unit_of_measurement: "%"
+
+text_sensor:
+  - platform: template
+    id: emotion_state
+    name: Emotion state
+    update_interval: never
+
+button:
+  - platform: template
+    id: emotion_reset_button
+    name: Emotion reset
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          id(emotion_priority) = 0;
+          id(set_emotion)->execute(andy::E_NEUTRAL, 40, 0, andy::P_VOICE);
+
+script:
+  # The only way an emotion changes. Refuses a weaker source while a stronger
+  # one still holds, then repaints face and ring and reports the new state.
+  - id: set_emotion
+    mode: single
+    parameters:
+      index: int
+      intensity: int
+      hold: int
+      priority: int
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          const bool holding = (int32_t)(now - id(emotion_hold_until_ms)) < 0;
+          if (holding && priority < id(emotion_priority)) {
+            return;
+          }
+          if (index < 0 || index >= andy::EMOTION_COUNT) {
+            return;
+          }
+          id(emotion_index) = static_cast<uint8_t>(index);
+          id(emotion_intensity) = intensity < 0 ? 0 : (intensity > 100 ? 100 : intensity);
+          id(emotion_priority) = static_cast<uint8_t>(priority);
+          id(emotion_hold_until_ms) = now + (uint32_t)(hold > 0 ? hold : 0) * 1000;
+
+          const auto &profile = andy::EMOTIONS[id(emotion_index)];
+          // Keep the addressable select in step when a local reflex or the
+          // decay timer changes the mood, so the API always reads the truth.
+          const auto shown = id(emotion_select).active_index();
+          if (!shown.has_value() || shown.value() != id(emotion_index)) {
+            auto call = id(emotion_select).make_call();
+            call.set_index(id(emotion_index));
+            call.perform();
+          }
+          char summary[64];
+          snprintf(summary, sizeof(summary), "%s %d%%", profile.name,
+                   id(emotion_intensity));
+          id(emotion_state).publish_state(summary);
+          ESP_LOGI("andy.emotion", "Emotion %s intensity=%d hold=%ds priority=%d",
+                   profile.name, id(emotion_intensity), hold, priority);
+      - component.update: andy_display
+      - script.execute: apply_voice_light
+      # The body moves for events, not for chatter. The conversation lifecycle
+      # changes mood constantly, and driving the servos from it would leave the
+      # rail energised all day and wear the mechanism for nothing. Anything at
+      # interaction precedence or above is a real event and earns a movement.
+      - if:
+          condition:
+            lambda: |-
+              return priority >= andy::P_INTERACT &&
+                     andy::EMOTIONS[id(emotion_index)].idiom != andy::IDIOM_STILL;
+          then:
+            - script.execute:
+                id: run_idiom
+                idiom: !lambda "return andy::EMOTIONS[id(emotion_index)].idiom;"
+                intensity: !lambda "return id(emotion_intensity);"
+
+interval:
+  # Emotions fade rather than snap back. Once the dwell expires the intensity
+  # falls, and at zero Andy returns to a calm baseline and releases precedence.
+  - interval: 2s
+    then:
+      - lambda: |-
+          if ((int32_t)(millis() - id(emotion_hold_until_ms)) < 0) {
+            return;
+          }
+          if (id(emotion_index) == andy::E_NEUTRAL && id(emotion_intensity) <= 40) {
+            id(emotion_priority) = 0;
+            return;
+          }
+          int faded = id(emotion_intensity) - 10;
+          if (faded > 40) {
+            id(emotion_intensity) = faded;
+            const auto &profile = andy::EMOTIONS[id(emotion_index)];
+            char summary[64];
+            snprintf(summary, sizeof(summary), "%s %d%%", profile.name,
+                     id(emotion_intensity));
+            id(emotion_state).publish_state(summary);
+            id(andy_display).update();
+            return;
+          }
+          id(emotion_priority) = 0;
+          id(set_emotion)->execute(andy::E_NEUTRAL, 40, 0, andy::P_VOICE);

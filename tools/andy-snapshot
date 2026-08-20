@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/andy-lab-common.sh
+source "${script_dir}/andy-lab-common.sh"
+
+if (($# > 1)); then
+  printf 'Usage: %s [output.jpg]\n' "$0" >&2
+  exit 2
+fi
+
+andy_require_command date
+andy_require_command ffmpeg
+andy_require_decimal ANDY_CAMERA_SETTLE_SECONDS "$ANDY_CAMERA_SETTLE_SECONDS"
+
+output_file="${1:-/tmp/andy-snapshot-$(date +%Y%m%d-%H%M%S).jpg}"
+if [[ -e "$output_file" ]]; then
+  printf 'Refusing to overwrite existing file: %s\n' "$output_file" >&2
+  exit 1
+fi
+
+"${script_dir}/andy-camera-setup" >/dev/null
+
+ffmpeg \
+  -hide_banner \
+  -loglevel warning \
+  -f v4l2 \
+  -input_format mjpeg \
+  -framerate "$ANDY_CAMERA_FRAME_RATE" \
+  -video_size "$ANDY_CAMERA_VIDEO_SIZE" \
+  -i "$ANDY_CAMERA_DEVICE" \
+  -ss "$ANDY_CAMERA_SETTLE_SECONDS" \
+  -frames:v 1 \
+  -update 1 \
+  -n \
+  "$output_file"
+
+printf '%s\n' "$output_file"

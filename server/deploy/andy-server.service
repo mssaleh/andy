@@ -1,0 +1,22 @@
+[Unit]
+Description=Andy voice agent
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=%h/andy/andy-server-production
+EnvironmentFile=%h/andy/andy-server-production/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=%h/andy/andy-server-production/.venv/bin/python -m andy
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

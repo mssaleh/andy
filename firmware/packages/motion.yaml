@@ -1,0 +1,1176 @@
+esphome:
+  on_boot:
+    - priority: -150
+      then:
+        - lambda: |-
+            id(motion_active) = false;
+            id(motion_commanded) = false;
+            id(motion_inhibited) = false;
+            id(motion_active_sensor).publish_state(false);
+            id(motion_inhibited_sensor).publish_state(false);
+            id(preflight_runs).publish_state(id(preflight_count));
+            id(movement_starts).publish_state(id(movement_start_count));
+            id(movement_completions).publish_state(id(movement_complete_count));
+            id(movement_faults).publish_state(id(movement_fault_count));
+            id(yaw_feedback_misses_total_sensor).publish_state(
+                id(yaw_feedback_miss_total));
+            id(pitch_feedback_misses_total_sensor).publish_state(
+                id(pitch_feedback_miss_total));
+            id(motion_state).publish_state(
+                "idle: torque released; servo rail off");
+  on_shutdown:
+    - priority: 750
+      then:
+        - lambda: |-
+            id(scs9009_hub)->set_torque_pair(0);
+            id(motion_active) = false;
+            id(motion_commanded) = false;
+            id(motion_program_active) = false;
+        - switch.turn_off: servo_power
+
+external_components:
+  # `ftservo` is a build dependency of `scs9009`, not a servo platform this
+  # image uses. The vendor ships `components/scs9009/ftservo/scs9009_servo.h`,
+  # which does `#include "../../ftservo/ftservo.h"` and derives from
+  # `ftservo::FTServo`. ESPHome copies the whole `scs9009` tree into `src/` and
+  # PlatformIO compiles every `.cpp` under it, so dropping `ftservo` here breaks
+  # the build. Nothing declares `platform: ftservo`.
+  - source:
+      type: git
+      url: https://github.com/m5stack/esphome-yaml.git
+      ref: 238ba9825e7874d5626709631dae6be92e861b17
+      path: components
+    components: [scs9009, ftservo]
+  - source:
+      type: local
+      path: components
+    components: [andy_scs9009]
+
+uart:
+  - id: servo_uart
+    tx_pin: GPIO6
+    rx_pin: GPIO7
+    baud_rate: 1000000
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+
+andy_scs9009:
+  id: scs9009_hub
+  uart_id: servo_uart
+
+globals:
+  - id: motion_active
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: motion_inhibited
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: motion_commanded
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: motion_target_yaw_steps
+    type: int
+    restore_value: false
+    initial_value: "466"
+  - id: motion_target_pitch_steps
+    type: int
+    restore_value: false
+    initial_value: "620"
+  - id: motion_start_yaw_steps
+    type: int
+    restore_value: false
+    initial_value: "466"
+  - id: motion_start_pitch_steps
+    type: int
+    restore_value: false
+    initial_value: "620"
+  - id: motion_final_yaw_torque_state
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: motion_final_pitch_torque_state
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: motion_speed
+    type: int
+    restore_value: false
+    initial_value: "300"
+  - id: motion_deadline_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: sample_yaw_next
+    type: bool
+    restore_value: false
+    initial_value: "true"
+  - id: yaw_feedback_valid
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: pitch_feedback_valid
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: yaw_feedback_misses
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: pitch_feedback_misses
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: yaw_feedback_miss_events
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: pitch_feedback_miss_events
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: yaw_feedback_miss_total
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: pitch_feedback_miss_total
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  # Latest verified position per axis, so a pose can end when it has actually
+  # arrived rather than when its worst-case deadline expires.
+  - id: yaw_seen_position
+    type: int
+    restore_value: false
+    initial_value: "-1"
+  - id: pitch_seen_position
+    type: int
+    restore_value: false
+    initial_value: "-1"
+  - id: motion_earliest_finish_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: yaw_last_position
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: pitch_last_position
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: yaw_last_current
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: pitch_last_current
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: yaw_last_load
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: pitch_last_load
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: yaw_last_direction
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: pitch_last_direction
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: yaw_stall_confirmations
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: pitch_stall_confirmations
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: yaw_peak_current
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: pitch_peak_current
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: yaw_peak_load
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: pitch_peak_load
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: yaw_peak_temperature
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: pitch_peak_temperature
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: preflight_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: movement_start_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: movement_complete_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: movement_fault_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  # A program keeps the rail energised across its poses so choreography reads as
+  # one movement instead of a series of restarts. Every fault path still cuts
+  # the rail immediately, and the watchdog below bounds how long it may stay on.
+  - id: motion_program_active
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: motion_program_until_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+script:
+  - id: servo_bus_preflight
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: return !id(motion_active) && !id(motion_inhibited);
+          then:
+            - lambda: |-
+                id(motion_active) = true;
+                id(motion_active_sensor).publish_state(true);
+                id(motion_state).publish_state("preflight: powering servo rail");
+            - switch.turn_on: servo_power
+            - delay: 1500ms
+            - lambda: |-
+                // Make the preflight mechanically inert even if a servo retained
+                // a torque-enable bit before the rail was cycled.
+                int yaw_torque_state = -1;
+                int pitch_torque_state = -1;
+                const bool torque_released =
+                  id(scs9009_hub)->set_torque_pair_verified(
+                    0, yaw_torque_state, pitch_torque_state);
+
+                const bool yaw_ok = id(scs9009_hub)->feedback_verified(1) > 0;
+                int yaw_pos = -1, yaw_load_value = -1, yaw_current_value = -1;
+                int yaw_temp_value = -1, yaw_voltage_raw = -1;
+                if (yaw_ok) {
+                  yaw_pos = id(scs9009_hub)->cached_position();
+                  yaw_load_value = id(scs9009_hub)->cached_load();
+                  yaw_current_value = id(scs9009_hub)->cached_current();
+                  yaw_temp_value = id(scs9009_hub)->cached_temperature();
+                  yaw_voltage_raw = id(scs9009_hub)->cached_voltage();
+                }
+
+                const bool pitch_ok = id(scs9009_hub)->feedback_verified(2) > 0;
+                int pitch_pos = -1, pitch_load_value = -1, pitch_current_value = -1;
+                int pitch_temp_value = -1, pitch_voltage_raw = -1;
+                if (pitch_ok) {
+                  pitch_pos = id(scs9009_hub)->cached_position();
+                  pitch_load_value = id(scs9009_hub)->cached_load();
+                  pitch_current_value = id(scs9009_hub)->cached_current();
+                  pitch_temp_value = id(scs9009_hub)->cached_temperature();
+                  pitch_voltage_raw = id(scs9009_hub)->cached_voltage();
+                }
+
+                if (yaw_ok) {
+                  id(yaw_position).publish_state(yaw_pos);
+                  id(yaw_load).publish_state(yaw_load_value);
+                  id(yaw_current).publish_state(yaw_current_value);
+                  id(yaw_temperature).publish_state(yaw_temp_value);
+                  id(yaw_voltage).publish_state(yaw_voltage_raw * 0.1f);
+                }
+                if (pitch_ok) {
+                  id(pitch_position).publish_state(pitch_pos);
+                  id(pitch_load).publish_state(pitch_load_value);
+                  id(pitch_current).publish_state(pitch_current_value);
+                  id(pitch_temperature).publish_state(pitch_temp_value);
+                  id(pitch_voltage).publish_state(pitch_voltage_raw * 0.1f);
+                }
+
+                const bool values_safe =
+                  torque_released && yaw_ok && pitch_ok &&
+                  yaw_pos >= 0 && yaw_pos <= 1000 &&
+                  pitch_pos >= 0 && pitch_pos <= 1000 &&
+                  yaw_torque_state == 0 && pitch_torque_state == 0 &&
+                  yaw_voltage_raw >= 40 && yaw_voltage_raw <= 74 &&
+                  pitch_voltage_raw >= 40 && pitch_voltage_raw <= 74 &&
+                  yaw_temp_value >= 0 && yaw_temp_value < 60 &&
+                  pitch_temp_value >= 0 && pitch_temp_value < 60;
+
+                id(preflight_count)++;
+                id(preflight_runs).publish_state(id(preflight_count));
+                char status[192];
+                if (values_safe) {
+                  snprintf(status, sizeof(status),
+                           "preflight ready: yaw=%d pitch=%d torque=%d/%d temp=%d/%d voltage=%.1f/%.1f",
+                           yaw_pos, pitch_pos, yaw_torque_state, pitch_torque_state,
+                           yaw_temp_value, pitch_temp_value,
+                           yaw_voltage_raw * 0.1f, pitch_voltage_raw * 0.1f);
+                  id(motion_state).publish_state(status);
+                  ESP_LOGI("andy.motion_gate",
+                           "Preflight ready (count=%" PRIu32 "): yaw=%d pitch=%d torque=%d/%d load=%d/%d current=%d/%d temp=%d/%d voltage=%.1f/%.1f",
+                           id(preflight_count), yaw_pos, pitch_pos,
+                           yaw_torque_state, pitch_torque_state,
+                           yaw_load_value, pitch_load_value,
+                           yaw_current_value, pitch_current_value,
+                           yaw_temp_value, pitch_temp_value,
+                           yaw_voltage_raw * 0.1f, pitch_voltage_raw * 0.1f);
+                } else {
+                  id(movement_fault_count)++;
+                  id(movement_faults).publish_state(id(movement_fault_count));
+                  id(motion_inhibited) = true;
+                  id(motion_inhibited_sensor).publish_state(true);
+                  snprintf(status, sizeof(status),
+                           "fault: preflight yaw=%d pitch=%d torque=%d/%d temp=%d/%d voltage=%.1f/%.1f",
+                           yaw_pos, pitch_pos, yaw_torque_state, pitch_torque_state,
+                           yaw_temp_value, pitch_temp_value,
+                           yaw_voltage_raw * 0.1f, pitch_voltage_raw * 0.1f);
+                  id(motion_state).publish_state(status);
+                  ESP_LOGE("andy.motion_gate", "%s", status);
+                }
+            - switch.turn_off: servo_power
+            - lambda: |-
+                id(motion_active) = false;
+                id(motion_active_sensor).publish_state(false);
+                ESP_LOGI("andy.motion_gate", "Servo rail OFF after preflight");
+          else:
+            - logger.log:
+                level: WARN
+                tag: andy.motion_gate
+                format: "Preflight rejected while motion is active or inhibited"
+
+  - id: start_fixed_motion
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: return !id(motion_active) && !id(motion_inhibited);
+          then:
+            - lambda: |-
+                id(motion_active) = true;
+                id(motion_commanded) = false;
+                id(motion_active_sensor).publish_state(true);
+                id(motion_state).publish_state("motion: powering servo rail");
+            - switch.turn_on: servo_power
+            # 1.5 s lets a cold rail settle. Within a program it is already
+            # settled, so paying it per pose is what made choreography stutter.
+            # 1.5 s lets a cold rail settle. Inside a program the rail is
+            # already up and torque was established on the previous frame, so
+            # this is only a scheduler breath; paying more is pure latency
+            # multiplied by every frame of a routine.
+            - delay: !lambda "return id(motion_program_active) ? 25 : 1500;"
+            - lambda: |-
+                // Establish a defined torque state before reading the starting
+                // position. No movement command is sent until every guard passes.
+                int release_yaw_state = -1;
+                int release_pitch_state = -1;
+                if (!id(scs9009_hub)->set_torque_pair_verified(
+                      0, release_yaw_state, release_pitch_state)) {
+                  id(servo_power).turn_off();
+                  id(motion_active) = false;
+                  id(motion_commanded) = false;
+                  id(motion_active_sensor).publish_state(false);
+                  id(movement_fault_count)++;
+                  id(movement_faults).publish_state(id(movement_fault_count));
+                  id(motion_inhibited) = true;
+                  id(motion_inhibited_sensor).publish_state(true);
+                  char status[128];
+                  snprintf(status, sizeof(status),
+                           "fault: torque release readback=%d/%d",
+                           release_yaw_state, release_pitch_state);
+                  id(motion_state).publish_state(status);
+                  ESP_LOGE("andy.motion_gate", "%s; servo rail OFF", status);
+                  return;
+                }
+            - delay: 1ms
+            - lambda: |-
+                if (!id(motion_active)) {
+                  return;
+                }
+                const auto abs_int = [](int value) { return value < 0 ? -value : value; };
+                const bool yaw_ok = id(scs9009_hub)->feedback_verified(1) > 0;
+                int yaw_pos = -1, yaw_load_value = -1, yaw_current_value = -1;
+                int yaw_temp_value = -1, yaw_voltage_raw = -1;
+                if (yaw_ok) {
+                  yaw_pos = id(scs9009_hub)->cached_position();
+                  yaw_load_value = abs_int(id(scs9009_hub)->cached_load());
+                  yaw_current_value = abs_int(id(scs9009_hub)->cached_current());
+                  yaw_temp_value = id(scs9009_hub)->cached_temperature();
+                  yaw_voltage_raw = id(scs9009_hub)->cached_voltage();
+                }
+
+                const bool pitch_ok = id(scs9009_hub)->feedback_verified(2) > 0;
+                int pitch_pos = -1, pitch_load_value = -1, pitch_current_value = -1;
+                int pitch_temp_value = -1, pitch_voltage_raw = -1;
+                if (pitch_ok) {
+                  pitch_pos = id(scs9009_hub)->cached_position();
+                  pitch_load_value = abs_int(id(scs9009_hub)->cached_load());
+                  pitch_current_value = abs_int(id(scs9009_hub)->cached_current());
+                  pitch_temp_value = id(scs9009_hub)->cached_temperature();
+                  pitch_voltage_raw = id(scs9009_hub)->cached_voltage();
+                }
+
+                const int target_yaw = id(motion_target_yaw_steps);
+                const int target_pitch = id(motion_target_pitch_steps);
+                const int speed = id(motion_speed);
+                const bool target_safe =
+                  target_yaw >= 196 && target_yaw <= 737 &&
+                  target_pitch >= 566 && target_pitch <= 828 &&
+                  // 100 gentle, 300 quick, 500 snappy on the vendor scale that
+                  // `../Will-Robot` records for this unit, where reactions use
+                  // 300-500. Expressive idioms need the top of that range; the
+                  // envelope above is unchanged.
+                  speed >= 100 && speed <= 500;
+                const bool feedback_safe =
+                  yaw_ok && pitch_ok &&
+                  yaw_pos >= 0 && yaw_pos <= 1000 &&
+                  pitch_pos >= 0 && pitch_pos <= 1000 &&
+                  yaw_voltage_raw >= 40 && yaw_voltage_raw <= 74 &&
+                  pitch_voltage_raw >= 40 && pitch_voltage_raw <= 74 &&
+                  yaw_temp_value >= 0 && yaw_temp_value < 60 &&
+                  pitch_temp_value >= 0 && pitch_temp_value < 60 &&
+                  yaw_load_value < 650 && pitch_load_value < 650 &&
+                  yaw_current_value < 350 && pitch_current_value < 350;
+
+                if (!target_safe || !feedback_safe) {
+                  id(scs9009_hub)->set_torque_pair(0);
+                  id(servo_power).turn_off();
+                  id(motion_active) = false;
+                  id(motion_commanded) = false;
+                  id(motion_active_sensor).publish_state(false);
+                  id(movement_fault_count)++;
+                  id(movement_faults).publish_state(id(movement_fault_count));
+                  id(motion_inhibited) = true;
+                  id(motion_inhibited_sensor).publish_state(true);
+                  char status[192];
+                  snprintf(status, sizeof(status),
+                           "fault: move preflight yaw=%d pitch=%d target=%d/%d temp=%d/%d",
+                           yaw_pos, pitch_pos, target_yaw, target_pitch,
+                           yaw_temp_value, pitch_temp_value);
+                  id(motion_state).publish_state(status);
+                  ESP_LOGE("andy.motion_gate", "%s", status);
+                  return;
+                }
+
+                id(yaw_position).publish_state(yaw_pos);
+                id(yaw_load).publish_state(yaw_load_value);
+                id(yaw_current).publish_state(yaw_current_value);
+                id(yaw_temperature).publish_state(yaw_temp_value);
+                id(yaw_voltage).publish_state(yaw_voltage_raw * 0.1f);
+                id(pitch_position).publish_state(pitch_pos);
+                id(pitch_load).publish_state(pitch_load_value);
+                id(pitch_current).publish_state(pitch_current_value);
+                id(pitch_temperature).publish_state(pitch_temp_value);
+                id(pitch_voltage).publish_state(pitch_voltage_raw * 0.1f);
+
+                id(yaw_feedback_valid) = false;
+                id(pitch_feedback_valid) = false;
+                id(yaw_feedback_misses) = 0;
+                id(pitch_feedback_misses) = 0;
+                id(yaw_feedback_miss_events) = 0;
+                id(pitch_feedback_miss_events) = 0;
+                id(yaw_stall_confirmations) = 0;
+                id(pitch_stall_confirmations) = 0;
+                id(yaw_peak_current) = yaw_current_value;
+                id(pitch_peak_current) = pitch_current_value;
+                id(yaw_peak_load) = yaw_load_value;
+                id(pitch_peak_load) = pitch_load_value;
+                id(yaw_peak_temperature) = yaw_temp_value;
+                id(pitch_peak_temperature) = pitch_temp_value;
+                id(sample_yaw_next) = true;
+                id(motion_start_yaw_steps) = yaw_pos;
+                id(motion_start_pitch_steps) = pitch_pos;
+            - delay: 1ms
+            - lambda: |-
+                if (!id(motion_active)) {
+                  return;
+                }
+                const auto abs_int = [](int value) { return value < 0 ? -value : value; };
+                const int target_yaw = id(motion_target_yaw_steps);
+                const int target_pitch = id(motion_target_pitch_steps);
+                const int speed = id(motion_speed);
+                int yaw_torque_state = -1;
+                int pitch_torque_state = -1;
+                if (!id(scs9009_hub)->set_torque_pair_verified(
+                      1, yaw_torque_state, pitch_torque_state)) {
+                  id(scs9009_hub)->set_torque_pair(0);
+                  id(servo_power).turn_off();
+                  id(motion_active) = false;
+                  id(motion_commanded) = false;
+                  id(motion_active_sensor).publish_state(false);
+                  id(movement_fault_count)++;
+                  id(movement_faults).publish_state(id(movement_fault_count));
+                  id(motion_inhibited) = true;
+                  id(motion_inhibited_sensor).publish_state(true);
+                  char status[128];
+                  snprintf(status, sizeof(status),
+                           "fault: torque enable readback=%d/%d",
+                           yaw_torque_state, pitch_torque_state);
+                  id(motion_state).publish_state(status);
+                  ESP_LOGE("andy.motion_gate", "%s; servo rail OFF", status);
+                  return;
+                }
+                id(scs9009_hub)->write_pos(1, target_yaw, 0, speed);
+                id(scs9009_hub)->write_pos(2, target_pitch, 0, speed);
+
+                const int yaw_travel =
+                  abs_int(target_yaw - id(motion_start_yaw_steps));
+                const int pitch_travel =
+                  abs_int(target_pitch - id(motion_start_pitch_steps));
+                const int travel = yaw_travel > pitch_travel ? yaw_travel : pitch_travel;
+                // The deadline bounds how long the move may take. It is not a
+                // dwell: waiting it out on every frame is what made a sequence
+                // of poses read as a series of separate movements.
+                const uint32_t settle_ms = (uint32_t)(travel * 1000 / speed) + 300;
+                id(motion_deadline_ms) = millis() + settle_ms;
+                id(motion_earliest_finish_ms) = millis() + 25;
+                id(yaw_seen_position) = -1;
+                id(pitch_seen_position) = -1;
+                id(motion_commanded) = true;
+                id(movement_start_count)++;
+                id(movement_starts).publish_state(id(movement_start_count));
+
+                char status[160];
+                snprintf(status, sizeof(status),
+                         "moving: %d/%d -> %d/%d speed=%d settle=%" PRIu32 "ms",
+                         id(motion_start_yaw_steps),
+                         id(motion_start_pitch_steps), target_yaw, target_pitch, speed,
+                         settle_ms);
+                id(motion_state).publish_state(status);
+                ESP_LOGI("andy.motion_gate",
+                         "Movement started (count=%" PRIu32 "): %s",
+                         id(movement_start_count), status);
+          else:
+            - logger.log:
+                level: WARN
+                tag: andy.motion_gate
+                format: "Movement rejected while motion is active or inhibited"
+
+  # The only clean way a program ends. Releases torque, verifies the readback,
+  # and powers the rail down. The watchdog below calls this if a program ever
+  # outlives its deadline, so a held rail cannot become a permanently held rail.
+  - id: end_motion_program
+    mode: single
+    then:
+      - lambda: |-
+          if (!id(motion_program_active)) {
+            return;
+          }
+          id(motion_program_active) = false;
+          int yaw_torque_state = -1;
+          int pitch_torque_state = -1;
+          const bool released = id(scs9009_hub)->set_torque_pair_verified(
+              0, yaw_torque_state, pitch_torque_state);
+          id(servo_power).turn_off();
+          if (!released || yaw_torque_state != 0 || pitch_torque_state != 0) {
+            id(movement_fault_count)++;
+            id(movement_faults).publish_state(id(movement_fault_count));
+            id(motion_inhibited) = true;
+            id(motion_inhibited_sensor).publish_state(true);
+            char status[128];
+            snprintf(status, sizeof(status),
+                     "fault: program torque release readback=%d/%d",
+                     yaw_torque_state, pitch_torque_state);
+            id(motion_state).publish_state(status);
+            ESP_LOGE("andy.motion_gate", "%s; servo rail OFF", status);
+            return;
+          }
+          id(motion_state).publish_state(
+              "idle: torque released; servo rail off");
+          ESP_LOGI("andy.motion_gate", "Program ended; torque 0/0, servo rail OFF");
+
+  - id: finalize_fixed_motion
+    mode: single
+    then:
+      - lambda: |-
+          if (!id(motion_active)) {
+            return;
+          }
+          // Release and verify torque in its own scheduler phase before final
+          // telemetry. A failure cuts the rail without waiting for another read.
+          int yaw_torque_state = -1;
+          int pitch_torque_state = -1;
+          if (!id(scs9009_hub)->set_torque_pair_verified(
+                0, yaw_torque_state, pitch_torque_state)) {
+            id(servo_power).turn_off();
+            id(motion_active) = false;
+            id(motion_commanded) = false;
+            id(motion_active_sensor).publish_state(false);
+            id(movement_fault_count)++;
+            id(movement_faults).publish_state(id(movement_fault_count));
+            id(motion_inhibited) = true;
+            id(motion_inhibited_sensor).publish_state(true);
+            char status[128];
+            snprintf(status, sizeof(status),
+                     "fault: torque release readback=%d/%d",
+                     yaw_torque_state, pitch_torque_state);
+            id(motion_state).publish_state(status);
+            ESP_LOGE("andy.motion_gate", "%s; servo rail OFF", status);
+            return;
+          }
+          id(motion_final_yaw_torque_state) = yaw_torque_state;
+          id(motion_final_pitch_torque_state) = pitch_torque_state;
+      - delay: 1ms
+      - lambda: |-
+          if (!id(motion_active)) {
+            return;
+          }
+          const auto abs_int = [](int value) { return value < 0 ? -value : value; };
+          const int yaw_torque_state = id(motion_final_yaw_torque_state);
+          const int pitch_torque_state = id(motion_final_pitch_torque_state);
+
+          const bool yaw_ok = id(scs9009_hub)->feedback_verified(1) > 0;
+          int yaw_pos = -1, yaw_temp_value = -1, yaw_voltage_raw = -1;
+          if (yaw_ok) {
+            yaw_pos = id(scs9009_hub)->cached_position();
+            yaw_temp_value = id(scs9009_hub)->cached_temperature();
+            yaw_voltage_raw = id(scs9009_hub)->cached_voltage();
+          }
+          const bool pitch_ok = id(scs9009_hub)->feedback_verified(2) > 0;
+          int pitch_pos = -1, pitch_temp_value = -1, pitch_voltage_raw = -1;
+          if (pitch_ok) {
+            pitch_pos = id(scs9009_hub)->cached_position();
+            pitch_temp_value = id(scs9009_hub)->cached_temperature();
+            pitch_voltage_raw = id(scs9009_hub)->cached_voltage();
+          }
+
+          if (yaw_ok) {
+            id(yaw_position).publish_state(yaw_pos);
+            id(yaw_temperature).publish_state(yaw_temp_value);
+            id(yaw_voltage).publish_state(yaw_voltage_raw * 0.1f);
+          }
+          if (pitch_ok) {
+            id(pitch_position).publish_state(pitch_pos);
+            id(pitch_temperature).publish_state(pitch_temp_value);
+            id(pitch_voltage).publish_state(pitch_voltage_raw * 0.1f);
+          }
+
+          const int yaw_error = abs_int(yaw_pos - id(motion_target_yaw_steps));
+          const int pitch_error = abs_int(pitch_pos - id(motion_target_pitch_steps));
+          const bool complete =
+            yaw_ok && pitch_ok &&
+            yaw_torque_state == 0 && pitch_torque_state == 0 &&
+            yaw_error <= 14 && pitch_error <= 14 &&
+            yaw_temp_value >= 0 && yaw_temp_value < 60 &&
+            pitch_temp_value >= 0 && pitch_temp_value < 60 &&
+            yaw_voltage_raw >= 40 && yaw_voltage_raw <= 74 &&
+            pitch_voltage_raw >= 40 && pitch_voltage_raw <= 74;
+
+          // The rail stays up only while a program is running and this pose
+          // finished clean. Anything else powers it down here and now.
+          const bool hold_rail = id(motion_program_active) && complete;
+          if (!hold_rail) {
+            id(servo_power).turn_off();
+            id(motion_program_active) = false;
+          }
+          id(motion_active) = false;
+          id(motion_commanded) = false;
+          id(motion_active_sensor).publish_state(false);
+
+          char status[256];
+          if (complete) {
+            id(movement_complete_count)++;
+            id(movement_completions).publish_state(id(movement_complete_count));
+            snprintf(status, sizeof(status),
+                     "complete: yaw=%d/%d error=%d pitch=%d/%d error=%d torque=%d/%d peak_load=%d/%d peak_current=%d/%d temp=%d/%d feedback_misses=%d/%d",
+                     yaw_pos, id(motion_target_yaw_steps), yaw_error,
+                     pitch_pos, id(motion_target_pitch_steps), pitch_error,
+                     yaw_torque_state, pitch_torque_state,
+                     id(yaw_peak_load), id(pitch_peak_load),
+                     id(yaw_peak_current), id(pitch_peak_current),
+                     id(yaw_peak_temperature), id(pitch_peak_temperature),
+                     id(yaw_feedback_miss_events),
+                     id(pitch_feedback_miss_events));
+            id(motion_state).publish_state(status);
+            ESP_LOGI("andy.motion_gate",
+                     "Movement complete (count=%" PRIu32 "): %s; servo rail %s",
+                     id(movement_complete_count), status,
+                     hold_rail ? "HELD for program" : "OFF");
+          } else {
+            id(movement_fault_count)++;
+            id(movement_faults).publish_state(id(movement_fault_count));
+            id(motion_inhibited) = true;
+            id(motion_inhibited_sensor).publish_state(true);
+            snprintf(status, sizeof(status),
+                     "fault: tracking yaw=%d/%d error=%d pitch=%d/%d error=%d torque=%d/%d temp=%d/%d",
+                     yaw_pos, id(motion_target_yaw_steps), yaw_error,
+                     pitch_pos, id(motion_target_pitch_steps), pitch_error,
+                     yaw_torque_state, pitch_torque_state,
+                     yaw_temp_value, pitch_temp_value);
+            id(motion_state).publish_state(status);
+            ESP_LOGE("andy.motion_gate", "%s; servo rail OFF", status);
+          }
+
+button:
+  - platform: template
+    id: motion_emergency_stop_button
+    name: Motion emergency stop
+    entity_category: diagnostic
+    on_press:
+      - script.stop: servo_bus_preflight
+      - script.stop: start_fixed_motion
+      - script.stop: finalize_fixed_motion
+      - lambda: |-
+          const bool interrupted = id(motion_active) || id(motion_program_active);
+          id(motion_program_active) = false;
+          id(scs9009_hub)->set_torque_pair(0);
+          id(servo_power).turn_off();
+          id(motion_active) = false;
+          id(motion_commanded) = false;
+          id(motion_active_sensor).publish_state(false);
+          if (interrupted) {
+            id(movement_fault_count)++;
+            id(movement_faults).publish_state(id(movement_fault_count));
+            id(motion_state).publish_state("fault: emergency stop");
+            ESP_LOGE("andy.motion_gate",
+                     "Emergency stop (fault count=%" PRIu32 "); servo rail OFF",
+                     id(movement_fault_count));
+          } else {
+            id(motion_state).publish_state("idle: torque released; servo rail off");
+            ESP_LOGI("andy.motion_gate", "Emergency stop verified while idle");
+          }
+
+  # A detected hardware fault latches `motion_inhibited`, so no further motion
+  # starts until it is acknowledged here or the server reconnects. Emergency
+  # stop deliberately does not latch: the server presses it to cancel a motion
+  # that a newer one supersedes.
+  - platform: template
+    id: motion_clear_inhibit_button
+    name: Clear motion inhibit
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          const bool was_inhibited = id(motion_inhibited);
+          id(motion_inhibited) = false;
+          id(motion_inhibited_sensor).publish_state(false);
+          if (was_inhibited) {
+            id(motion_state).publish_state(
+                "idle: motion inhibit cleared; servo rail off");
+            ESP_LOGW("andy.motion_gate",
+                     "Motion inhibit cleared after fault count=%" PRIu32,
+                     id(movement_fault_count));
+          }
+
+  - platform: template
+    id: servo_preflight_button
+    name: Servo bus preflight
+    entity_category: diagnostic
+    on_press:
+      - script.execute: servo_bus_preflight
+
+  - platform: template
+    id: motion_home_button
+    name: Motion home
+    entity_category: diagnostic
+    on_press:
+      - if:
+          condition:
+            lambda: return !id(motion_active) && !id(motion_inhibited);
+          then:
+            - lambda: |-
+                id(motion_target_yaw_steps) = 466;
+                id(motion_target_pitch_steps) = 620;
+                id(motion_speed) = 300;
+            - script.execute: start_fixed_motion
+
+  - platform: template
+    id: motion_look_left_button
+    name: Motion look left 30 degrees
+    entity_category: diagnostic
+    on_press:
+      - if:
+          condition:
+            lambda: return !id(motion_active) && !id(motion_inhibited);
+          then:
+            - lambda: |-
+                // yaw -30 degrees: round((-30 + 164) * 2.844)
+                id(motion_target_yaw_steps) = 381;
+                id(motion_target_pitch_steps) = 620;
+                id(motion_speed) = 300;
+            - script.execute: start_fixed_motion
+
+  - platform: template
+    id: motion_look_right_button
+    name: Motion look right 30 degrees
+    entity_category: diagnostic
+    on_press:
+      - if:
+          condition:
+            lambda: return !id(motion_active) && !id(motion_inhibited);
+          then:
+            - lambda: |-
+                // yaw +30 degrees: round((30 + 164) * 2.844)
+                id(motion_target_yaw_steps) = 552;
+                id(motion_target_pitch_steps) = 620;
+                id(motion_speed) = 300;
+            - script.execute: start_fixed_motion
+
+  - platform: template
+    id: motion_look_up_button
+    name: Motion look up 30 degrees
+    entity_category: diagnostic
+    on_press:
+      - if:
+          condition:
+            lambda: return !id(motion_active) && !id(motion_inhibited);
+          then:
+            - lambda: |-
+                // pitch level is 45 degrees; 45 + 30 = 75 degrees.
+                // round((75 + 173) * 2.844)
+                id(motion_target_yaw_steps) = 466;
+                id(motion_target_pitch_steps) = 705;
+                id(motion_speed) = 300;
+            - script.execute: start_fixed_motion
+
+  - platform: template
+    id: motion_look_down_button
+    name: Motion look down 15 degrees
+    entity_category: diagnostic
+    on_press:
+      - if:
+          condition:
+            lambda: return !id(motion_active) && !id(motion_inhibited);
+          then:
+            - lambda: |-
+                // This unit has less safe travel below level than above it.
+                // pitch level is 45 degrees; 45 - 15 = 30 degrees.
+                // round((30 + 173) * 2.844)
+                id(motion_target_yaw_steps) = 466;
+                id(motion_target_pitch_steps) = 577;
+                id(motion_speed) = 300;
+            - script.execute: start_fixed_motion
+
+  - platform: template
+    id: motion_yaw_positive_button
+    name: Motion yaw positive 10 degrees
+    entity_category: diagnostic
+    on_press:
+      - if:
+          condition:
+            lambda: return !id(motion_active) && !id(motion_inhibited);
+          then:
+            - lambda: |-
+                id(motion_target_yaw_steps) = 495;
+                id(motion_target_pitch_steps) = 620;
+                id(motion_speed) = 300;
+            - script.execute: start_fixed_motion
+
+  - platform: template
+    id: motion_pitch_positive_button
+    name: Motion pitch positive 10 degrees
+    entity_category: diagnostic
+    on_press:
+      - if:
+          condition:
+            lambda: return !id(motion_active) && !id(motion_inhibited);
+          then:
+            - lambda: |-
+                id(motion_target_yaw_steps) = 466;
+                id(motion_target_pitch_steps) = 648;
+                id(motion_speed) = 300;
+            - script.execute: start_fixed_motion
+
+interval:
+  # A program may hold the rail, so it may not hold it indefinitely. This is the
+  # backstop if a sequence is interrupted between poses and never ends itself.
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (!id(motion_program_active) || id(motion_active)) {
+            return;
+          }
+          if ((int32_t)(millis() - id(motion_program_until_ms)) >= 0) {
+            ESP_LOGW("andy.motion_gate",
+                     "Program outlived its deadline; ending and powering down");
+            id(end_motion_program)->execute();
+          }
+
+  - interval: 25ms
+    then:
+      - lambda: |-
+          if (!id(motion_active) || !id(motion_commanded)) {
+            return;
+          }
+
+          const auto abs_int = [](int value) { return value < 0 ? -value : value; };
+          auto stop_with_fault = [&](const char *reason) {
+            id(scs9009_hub)->set_torque_pair(0);
+            id(servo_power).turn_off();
+            id(motion_active) = false;
+            id(motion_commanded) = false;
+            id(motion_active_sensor).publish_state(false);
+            id(movement_fault_count)++;
+            id(movement_faults).publish_state(id(movement_fault_count));
+            id(motion_inhibited) = true;
+            id(motion_inhibited_sensor).publish_state(true);
+            id(motion_state).publish_state(std::string("fault: ") + reason);
+            ESP_LOGE("andy.motion_gate", "Motion fault (count=%" PRIu32 "): %s",
+                     id(movement_fault_count), reason);
+          };
+
+          const uint32_t now = millis();
+          if ((int32_t)(now - id(motion_deadline_ms)) >= 0) {
+            // Stop live sampling before the separate finalizer releases torque.
+            id(motion_commanded) = false;
+            id(finalize_fixed_motion).execute();
+            return;
+          }
+
+          const bool yaw_axis = id(sample_yaw_next);
+          id(sample_yaw_next) = !id(sample_yaw_next);
+          const uint8_t servo_id = yaw_axis ? 1 : 2;
+          int &feedback_misses = yaw_axis ? id(yaw_feedback_misses)
+                                          : id(pitch_feedback_misses);
+          if (id(scs9009_hub)->feedback(servo_id) <= 0) {
+            feedback_misses++;
+            if (yaw_axis) {
+              id(yaw_feedback_miss_events)++;
+              id(yaw_feedback_miss_total)++;
+              id(yaw_feedback_misses_total_sensor).publish_state(
+                  id(yaw_feedback_miss_total));
+            } else {
+              id(pitch_feedback_miss_events)++;
+              id(pitch_feedback_miss_total)++;
+              id(pitch_feedback_misses_total_sensor).publish_state(
+                  id(pitch_feedback_miss_total));
+            }
+            if (feedback_misses >= 2) {
+              stop_with_fault(yaw_axis ? "confirmed yaw feedback loss"
+                                       : "confirmed pitch feedback loss");
+            }
+            return;
+          }
+          feedback_misses = 0;
+
+          const int position = id(scs9009_hub)->cached_position();
+          const int current = abs_int(id(scs9009_hub)->cached_current());
+          const int load = abs_int(id(scs9009_hub)->cached_load());
+          const int temperature = id(scs9009_hub)->cached_temperature();
+          const int voltage = id(scs9009_hub)->cached_voltage();
+          if (position < 0 || position > 1000 || temperature < 0 ||
+              temperature >= 60 || voltage < 40 || voltage > 74) {
+            stop_with_fault(yaw_axis ? "unsafe yaw telemetry" : "unsafe pitch telemetry");
+            return;
+          }
+
+          if (yaw_axis) {
+            id(yaw_seen_position) = position;
+          } else {
+            id(pitch_seen_position) = position;
+          }
+
+          // Arrived on both axes: finish now rather than sitting on the target
+          // until the deadline. Every completion check still runs in the
+          // finalizer, so this ends the move earlier, never less safely.
+          if ((int32_t)(now - id(motion_earliest_finish_ms)) >= 0 &&
+              id(yaw_seen_position) >= 0 && id(pitch_seen_position) >= 0 &&
+              abs_int(id(motion_target_yaw_steps) - id(yaw_seen_position)) <= 8 &&
+              abs_int(id(motion_target_pitch_steps) - id(pitch_seen_position)) <= 8) {
+            id(motion_commanded) = false;
+            id(finalize_fixed_motion).execute();
+            return;
+          }
+
+          if (yaw_axis) {
+            id(yaw_position).publish_state(position);
+            id(yaw_load).publish_state(load);
+            id(yaw_current).publish_state(current);
+            id(yaw_temperature).publish_state(temperature);
+            id(yaw_voltage).publish_state(voltage * 0.1f);
+            if (current > id(yaw_peak_current)) id(yaw_peak_current) = current;
+            if (load > id(yaw_peak_load)) id(yaw_peak_load) = load;
+            if (temperature > id(yaw_peak_temperature)) id(yaw_peak_temperature) = temperature;
+          } else {
+            id(pitch_position).publish_state(position);
+            id(pitch_load).publish_state(load);
+            id(pitch_current).publish_state(current);
+            id(pitch_temperature).publish_state(temperature);
+            id(pitch_voltage).publish_state(voltage * 0.1f);
+            if (current > id(pitch_peak_current)) id(pitch_peak_current) = current;
+            if (load > id(pitch_peak_load)) id(pitch_peak_load) = load;
+            if (temperature > id(pitch_peak_temperature)) id(pitch_peak_temperature) = temperature;
+          }
+
+          const int target = yaw_axis ? id(motion_target_yaw_steps)
+                                      : id(motion_target_pitch_steps);
+          const int target_delta = target - position;
+          bool &last_valid = yaw_axis ? id(yaw_feedback_valid)
+                                      : id(pitch_feedback_valid);
+          int &last_position = yaw_axis ? id(yaw_last_position)
+                                        : id(pitch_last_position);
+          int &last_current = yaw_axis ? id(yaw_last_current)
+                                       : id(pitch_last_current);
+          int &last_load = yaw_axis ? id(yaw_last_load)
+                                    : id(pitch_last_load);
+          int &last_direction = yaw_axis ? id(yaw_last_direction)
+                                         : id(pitch_last_direction);
+          int &confirmations = yaw_axis ? id(yaw_stall_confirmations)
+                                        : id(pitch_stall_confirmations);
+
+          if (abs_int(target_delta) < 8) {
+            last_valid = false;
+            confirmations = 0;
+            return;
+          }
+
+          const int direction = target_delta > 0 ? 1 : -1;
+          if (last_valid && direction == last_direction) {
+            const int position_delta = abs_int(position - last_position);
+            const bool position_stuck = position_delta <= 1;
+            const bool current_spike = current >= 350 || current - last_current >= 80;
+            const bool load_spike = load >= 650 || load - last_load >= 150;
+            if (position_stuck && (current_spike || load_spike)) {
+              confirmations++;
+            } else if (position_delta > 1) {
+              confirmations = 0;
+            }
+          } else {
+            confirmations = 0;
+          }
+
+          last_position = position;
+          last_current = current;
+          last_load = load;
+          last_direction = direction;
+          last_valid = true;
+
+          if (confirmations >= 2) {
+            stop_with_fault(yaw_axis ? "confirmed yaw stall" : "confirmed pitch stall");
+          }
+
+sensor:
+  - platform: template
+    id: yaw_position
+    name: Motion yaw position
+    unit_of_measurement: steps
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: pitch_position
+    name: Motion pitch position
+    unit_of_measurement: steps
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: yaw_load
+    name: Motion yaw load
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: pitch_load
+    name: Motion pitch load
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: yaw_current
+    name: Motion yaw current
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: pitch_current
+    name: Motion pitch current
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: yaw_temperature
+    name: Motion yaw temperature
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: pitch_temperature
+    name: Motion pitch temperature
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: yaw_voltage
+    name: Motion yaw voltage
+    unit_of_measurement: V
+    device_class: voltage
+    accuracy_decimals: 1
+    update_interval: never
+  - platform: template
+    id: pitch_voltage
+    name: Motion pitch voltage
+    unit_of_measurement: V
+    device_class: voltage
+    accuracy_decimals: 1
+    update_interval: never
+  - platform: template
+    id: preflight_runs
+    name: Motion preflight runs
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: movement_starts
+    name: Motion starts
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: movement_completions
+    name: Motion completions
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: movement_faults
+    name: Motion faults
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: yaw_feedback_misses_total_sensor
+    name: Motion yaw feedback misses
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: pitch_feedback_misses_total_sensor
+    name: Motion pitch feedback misses
+    accuracy_decimals: 0
+    update_interval: never
+
+binary_sensor:
+  # The firmware can start a movement of its own, from an emotion idiom, while
+  # the server is also free to run a named program. Both drive the same servos
+  # and the same counters, so the server has to be able to see that the device
+  # is already busy with its own choreography.
+  - platform: template
+    id: motion_program_sensor
+    name: Motion program
+    lambda: return id(motion_program_active);
+
+  - platform: template
+    id: motion_active_sensor
+    name: Motion active
+  - platform: template
+    id: motion_inhibited_sensor
+    name: Motion inhibited
+
+text_sensor:
+  - platform: template
+    id: motion_state
+    name: Motion state
+    update_interval: never

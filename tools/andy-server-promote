@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_root="$(cd -- "${script_dir}/.." && pwd)"
+if [[ -f "${script_dir}/site.env" ]]; then
+  # shellcheck disable=SC1091
+  source "${script_dir}/site.env"
+fi
+remote_host="${ANDY_DIAGNOSTIC_SSH_HOST:-192.0.2.20}"
+remote_home="${ANDY_REMOTE_HOME:-$HOME}"
+remote_candidate="${remote_home}/andy/andy-server-candidate"
+environment_dir=""
+
+cleanup() {
+  if [[ -n "$environment_dir" && -d "$environment_dir" ]]; then
+    rm -rf -- "$environment_dir"
+  fi
+}
+trap cleanup EXIT
+
+if [[ "${1:-}" != "--apply" ]] || (($# != 1)); then
+  printf 'Usage: %s --apply\n' "$0" >&2
+  exit 2
+fi
+if [[ ! "$remote_host" =~ ^[A-Za-z0-9_.@:-]+$ ]]; then
+  printf 'Invalid remote host: %s\n' "$remote_host" >&2
+  exit 2
+fi
+for command_name in mktemp rsync ssh; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    printf 'Required command is unavailable: %s\n' "$command_name" >&2
+    exit 1
+  fi
+done
+
+for required_file in \
+  "${project_root}/.env" \
+  "${project_root}/firmware/secrets.yaml" \
+  "${project_root}/server/deploy/production.env.example" \
+  "${project_root}/server/deploy/render_environment.py"; do
+  if [[ ! -f "$required_file" ]]; then
+    printf 'Required deployment input is unavailable: %s\n' "$required_file" >&2
+    exit 1
+  fi
+done
+
+environment_dir="$(mktemp -d --tmpdir andy-server-promote.XXXXXX)"
+rendered_environment="${environment_dir}/production.env"
+"${script_dir}/uv" run \
+  --project "${project_root}/server" \
+  --python 3.12 \
+  python "${project_root}/server/deploy/render_environment.py" \
+  --template "${project_root}/server/deploy/production.env.example" \
+  --operator-env "${project_root}/.env" \
+  --firmware-secrets "${project_root}/firmware/secrets.yaml" \
+  --output "$rendered_environment"
+
+ssh -F /dev/null -o BatchMode=yes "$remote_host" \
+  "mkdir -p -- '$remote_candidate'"
+rsync \
+  --archive \
+  --compress \
+  --delete \
+  --delete-excluded \
+  --exclude .env \
+  --exclude .pytest_cache \
+  --exclude .uv-cache \
+  --exclude .uv-python \
+  --exclude .venv \
+  --exclude __pycache__ \
+  --exclude '*.pyc' \
+  --exclude tests \
+  --rsh='ssh -F /dev/null -o BatchMode=yes' \
+  "${project_root}/server/" \
+  "${remote_host}:${remote_candidate}/"
+rsync \
+  --archive \
+  --chmod=F600 \
+  --rsh='ssh -F /dev/null -o BatchMode=yes' \
+  "$rendered_environment" \
+  "${remote_host}:${remote_candidate}/.env"
+ssh -F /dev/null -o BatchMode=yes "$remote_host" \
+  "chmod 755 '$remote_candidate/deploy/install-production' && '$remote_candidate/deploy/install-production'"

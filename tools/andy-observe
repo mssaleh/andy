@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/andy-lab-common.sh
+source "${script_dir}/andy-lab-common.sh"
+
+if (($# > 2)); then
+  printf 'Usage: %s [duration-seconds] [output.mkv]\n' "$0" >&2
+  exit 2
+fi
+
+andy_require_command date
+andy_require_command ffmpeg
+
+duration="${1:-$ANDY_TRIAL_DURATION}"
+output_file="${2:-/tmp/andy-observation-$(date +%Y%m%d-%H%M%S).mkv}"
+andy_require_positive_decimal duration "$duration"
+
+if [[ -e "$output_file" ]]; then
+  printf 'Refusing to overwrite existing file: %s\n' "$output_file" >&2
+  exit 1
+fi
+
+"${script_dir}/andy-camera-setup" >/dev/null
+
+ffmpeg \
+  -hide_banner \
+  -loglevel warning \
+  -thread_queue_size 1024 \
+  -f v4l2 \
+  -input_format mjpeg \
+  -framerate "$ANDY_CAMERA_FRAME_RATE" \
+  -video_size "$ANDY_CAMERA_VIDEO_SIZE" \
+  -i "$ANDY_CAMERA_DEVICE" \
+  -thread_queue_size 1024 \
+  -f pulse \
+  -i "$ANDY_CAMERA_AUDIO_SOURCE" \
+  -t "$duration" \
+  -map 0:v:0 \
+  -map 1:a:0 \
+  -c:v copy \
+  -c:a pcm_s16le \
+  -n \
+  "$output_file"
+
+printf '%s\n' "$output_file"
