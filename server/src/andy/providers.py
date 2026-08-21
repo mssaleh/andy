@@ -205,37 +205,71 @@ class OpenAIAudioASR:
 
 
 class OpenAIChat:
+    """An OpenAI-shaped chat endpoint, in one of two dialects.
+
+    The two backends Andy runs against disagree on three points, and every one
+    of them is a hard error rather than something the server can shrug off:
+
+    * Azure rejects `max_tokens` and wants `max_completion_tokens`.
+    * Neither wants a temperature: Azure rejects anything but its default, and
+      1.0 is the recommended shape for the Ollama models too, so the default
+      is left alone on both.
+    * Azure enforces a JSON schema; Ollama Cloud documents that it does not
+      support structured outputs at all, so asking for one there buys a
+      silently ignored field and a false sense of safety.
+
+    The dialect is configuration rather than a guess from the URL: a wrong
+    guess fails on every call, and the operator already switches the URL, the
+    model and the key together.
+    """
+
     def __init__(
         self,
         base_url: str,
         model: str,
         api_key: str,
         *,
+        api: str = "ollama",
         reasoning_effort: str = "none",
         max_tokens: int = 192,
-        temperature: float = 0.1,
+        json_schema: dict[str, object] | None = None,
         timeout: float = 45.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self._api = api
         self._reasoning_effort = reasoning_effort.strip()
         self._max_tokens = max_tokens
-        self._temperature = temperature
+        self._json_schema = json_schema
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = httpx.AsyncClient(timeout=timeout, headers=headers)
 
-    async def complete(self, messages: list[dict[str, str]]) -> str:
+    def _payload(self, messages: list[dict[str, str]]) -> dict[str, object]:
         payload: dict[str, object] = {
             "model": self._model,
             "messages": messages,
-            "max_tokens": self._max_tokens,
-            "temperature": self._temperature,
             "stream": False,
         }
+        if self._api == "azure":
+            payload["max_completion_tokens"] = self._max_tokens
+            if self._json_schema is not None:
+                payload["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "decision",
+                        "strict": True,
+                        "schema": self._json_schema,
+                    },
+                }
+        else:
+            payload["max_tokens"] = self._max_tokens
         if self._reasoning_effort:
             payload["reasoning_effort"] = self._reasoning_effort
+        return payload
+
+    async def complete(self, messages: list[dict[str, str]]) -> str:
         response = await self._client.post(
-            f"{self._base_url}/chat/completions", json=payload
+            f"{self._base_url}/chat/completions", json=self._payload(messages)
         )
         response.raise_for_status()
         data = response.json()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -51,12 +52,15 @@ class Camera2(Camera):
         asyncio.get_running_loop().call_soon(self._listener, state)
 
 
-def _provider(camera, handler, *, detector: str = "") -> VisionProvider:
+def _provider(
+    camera, handler, *, detector: str = "", api: str = "ollama"
+) -> VisionProvider:
     provider = VisionProvider(
         camera,
         base_url="http://vlm.test",
         model="a-vlm",
         api_key="",
+        api=api,
         detector_url=detector,
     )
     provider._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -159,3 +163,37 @@ async def test_a_camera_that_does_not_answer_does_not_hang_a_turn(
     with pytest.raises(RuntimeError, match="did not return a picture"):
         await provider.find(["a person"])
     await provider.aclose()
+
+
+@pytest.mark.parametrize(
+    ("api", "expected", "forbidden"),
+    [
+        ("azure", "max_completion_tokens", "max_tokens"),
+        ("ollama", "max_tokens", "max_completion_tokens"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_eye_speaks_the_same_dialect_as_the_voice(
+    api: str, expected: str, forbidden: str
+) -> None:
+    """One credential means one provider, so the eye moved to Azure too.
+
+    Azure rejects `max_tokens` outright rather than ignoring it, so a look
+    would fail with a 400 rather than a worse description.
+    """
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "A red wall."}}]}
+        )
+
+    provider = _provider(Camera2(), handler, api=api)
+    try:
+        assert await provider.describe() == "A red wall."
+    finally:
+        await provider.aclose()
+
+    assert seen[expected] == 160
+    assert forbidden not in seen

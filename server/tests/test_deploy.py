@@ -33,7 +33,7 @@ def test_renderer_combines_current_contract_without_exposing_or_losing_values(
 ) -> None:
     operator = _write(
         tmp_path / "operator.env",
-        "OLLAMA_API_KEY=model==key\n"
+        "ANDY_LLM_API_KEY=model==key\n"
         "ANDY_SYSTEM_PROMPT=Answer with context=a=b.\n",
     )
     included = _write(
@@ -56,7 +56,7 @@ def test_renderer_combines_current_contract_without_exposing_or_losing_values(
     values = renderer.read_environment(output)
     assert tuple(values) == renderer.EXPECTED_KEYS
     assert values["ANDY_DEVICE_KEY"] == "device==key"
-    assert values["OLLAMA_API_KEY"] == "model==key"
+    assert values["ANDY_LLM_API_KEY"] == "model==key"
     assert values["ANDY_SYSTEM_PROMPT"] == "Answer with context=a=b."
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
 
@@ -65,15 +65,15 @@ def test_renderer_combines_current_contract_without_exposing_or_losing_values(
     ("operator_text", "error"),
     [
         (
-            "OLLAMA_API_KEY=model-key\nUNSUPPORTED=value\n",
+            "ANDY_LLM_API_KEY=model-key\nUNSUPPORTED=value\n",
             "unsupported keys: UNSUPPORTED",
         ),
         (
-            "OLLAMA_API_KEY=first\nOLLAMA_API_KEY=second\n",
-            "duplicate environment key OLLAMA_API_KEY",
+            "ANDY_LLM_API_KEY=first\nANDY_LLM_API_KEY=second\n",
+            "duplicate environment key ANDY_LLM_API_KEY",
         ),
         (
-            "OLLAMA_API_KEY=model-key\nANDY_DEVICE_KEY=wrong-source\n",
+            "ANDY_LLM_API_KEY=model-key\nANDY_DEVICE_KEY=wrong-source\n",
             "ANDY_DEVICE_KEY must come from firmware/secrets.yaml",
         ),
     ],
@@ -111,7 +111,7 @@ def test_renderer_requires_a_real_firmware_api_key(
 ) -> None:
     operator = _write(
         tmp_path / "operator.env",
-        "OLLAMA_API_KEY=model-key\n",
+        "ANDY_LLM_API_KEY=model-key\n",
     )
     firmware = _write(tmp_path / "secrets.yaml", firmware_text)
 
@@ -133,7 +133,7 @@ def test_renderer_requires_the_exact_template_contract(tmp_path: Path) -> None:
     )
     operator = _write(
         tmp_path / "operator.env",
-        "OLLAMA_API_KEY=model-key\n",
+        "ANDY_LLM_API_KEY=model-key\n",
     )
     firmware = _write(
         tmp_path / "secrets.yaml",

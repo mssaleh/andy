@@ -52,12 +52,16 @@ class VisionProvider:
         base_url: str,
         model: str,
         api_key: str,
+        api: str = "ollama",
         detector_url: str = "",
         timeout: float = 60.0,
     ) -> None:
         self._client = client
         self._base_url = base_url.rstrip("/")
         self._model = model
+        # Azure rejects `max_tokens` outright, so the eye has to speak the same
+        # dialect as the voice rather than assume one.
+        self._api = api
         self._detector_url = detector_url.rstrip("/")
         self._http = httpx.AsyncClient(
             timeout=timeout,
@@ -119,7 +123,11 @@ class VisionProvider:
                 f"{self._base_url}/chat/completions",
                 json={
                     "model": self._model,
-                    "max_tokens": 160,
+                    (
+                        "max_completion_tokens"
+                        if self._api == "azure"
+                        else "max_tokens"
+                    ): 160,
                     "messages": [
                         {
                             "role": "user",

@@ -331,6 +331,22 @@ class MotionExecutor(Protocol):
     def snapshot(self) -> dict[str, object]: ...
 
 
+#: The decision shape, for a backend that can enforce one. It is the same three
+#: keys `parse_agent_decision` insists on, so an enforced answer cannot be the
+#: malformed kind that costs a repair round trip. Reply and motion stay
+#: nullable because `ignore`, `wait` and `end_context` carry neither.
+DECISION_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string"},
+        "reply": {"type": ["string", "null"]},
+        "motion": {"type": ["string", "null"]},
+    },
+    "required": ["kind", "reply", "motion"],
+    "additionalProperties": False,
+}
+
+
 def trim_to_sentence(text: str, limit: int = MAX_REPLY_CHARS) -> str:
     """Cut an over-long reply at the last sentence that fits.
 

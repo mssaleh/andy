@@ -147,7 +147,7 @@ transfers only the mode-`0600` rendered environment, builds an isolated Python
 3.12 uv candidate, atomically replaces production, and restores the preceding
 healthy production tree if GLM-5.2, providers, device identity, or motion
 readiness fails. Root `.env` is the operator overlay and must provide a
-non-empty `OLLAMA_API_KEY`; it is never copied as repository source.
+non-empty `ANDY_LLM_API_KEY`; it is never copied as repository source.
 
 ## Closed-loop observation
 

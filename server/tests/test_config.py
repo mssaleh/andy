@@ -12,7 +12,7 @@ def test_disabled_device_bridge_does_not_require_device_key(
 ) -> None:
     monkeypatch.setenv("ANDY_DEVICE_ENABLED", "false")
     monkeypatch.delenv("ANDY_DEVICE_KEY", raising=False)
-    monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+    monkeypatch.setenv("ANDY_LLM_API_KEY", "test-key")
 
     config = Config.from_env()
 
@@ -25,7 +25,7 @@ def test_enabled_device_bridge_requires_device_key(
 ) -> None:
     monkeypatch.setenv("ANDY_DEVICE_ENABLED", "true")
     monkeypatch.delenv("ANDY_DEVICE_KEY", raising=False)
-    monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+    monkeypatch.setenv("ANDY_LLM_API_KEY", "test-key")
 
     with pytest.raises(RuntimeError, match="ANDY_DEVICE_KEY"):
         Config.from_env()
@@ -45,7 +45,7 @@ def test_motion_actions_require_the_device_bridge(
 ) -> None:
     monkeypatch.setenv("ANDY_DEVICE_ENABLED", "false")
     monkeypatch.setenv("ANDY_MOTION_ACTIONS_ENABLED", "true")
-    monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+    monkeypatch.setenv("ANDY_LLM_API_KEY", "test-key")
 
     with pytest.raises(
         RuntimeError, match="ANDY_MOTION_ACTIONS_ENABLED requires"
@@ -58,7 +58,7 @@ def test_media_url_defaults_to_the_wireguard_server(
 ) -> None:
     monkeypatch.setenv("ANDY_DEVICE_ENABLED", "false")
     monkeypatch.delenv("ANDY_MEDIA_BASE_URL", raising=False)
-    monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+    monkeypatch.setenv("ANDY_LLM_API_KEY", "test-key")
 
     config = Config.from_env()
 
@@ -71,7 +71,7 @@ def test_device_port_must_be_valid(
 ) -> None:
     monkeypatch.setenv("ANDY_DEVICE_ENABLED", "false")
     monkeypatch.setenv("ANDY_DEVICE_PORT", value)
-    monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+    monkeypatch.setenv("ANDY_LLM_API_KEY", "test-key")
 
     with pytest.raises(RuntimeError, match="ANDY_DEVICE_PORT"):
         Config.from_env()
@@ -86,7 +86,7 @@ def test_media_url_must_be_an_absolute_http_url(
 ) -> None:
     monkeypatch.setenv("ANDY_DEVICE_ENABLED", "false")
     monkeypatch.setenv("ANDY_MEDIA_BASE_URL", value)
-    monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+    monkeypatch.setenv("ANDY_LLM_API_KEY", "test-key")
 
     with pytest.raises(RuntimeError, match="ANDY_MEDIA_BASE_URL"):
         Config.from_env()
@@ -119,8 +119,10 @@ def test_production_environment_example_matches_the_runtime_contract(
         "ANDY_ASR_LANGUAGE",
         "ANDY_TTS_URL",
         "ANDY_TTS_VOICE",
+        "ANDY_LLM_API",
         "ANDY_LLM_URL",
         "ANDY_LLM_MODEL",
+        "ANDY_LLM_API_KEY",
         "ANDY_LLM_REASONING",
         "ANDY_SYSTEM_PROMPT",
         "ANDY_AGENT_ENABLED",
@@ -135,12 +137,11 @@ def test_production_environment_example_matches_the_runtime_contract(
         "ANDY_VAD_NOISE_RATIO",
         "ANDY_SESSION_IDLE_SECONDS",
         "ANDY_STATE_DIR",
-        "OLLAMA_API_KEY",
     )
     assert entries["ANDY_MEDIA_BASE_URL"] == "http://10.0.0.3:8900"
 
     entries["ANDY_DEVICE_KEY"] = "device-key"
-    entries["OLLAMA_API_KEY"] = "model-key"
+    entries["ANDY_LLM_API_KEY"] = "model-key"
     for name, value in entries.items():
         monkeypatch.setenv(name, value)
 
@@ -152,7 +153,7 @@ def test_production_environment_example_matches_the_runtime_contract(
 
 def _bridgeless(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANDY_DEVICE_ENABLED", "false")
-    monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+    monkeypatch.setenv("ANDY_LLM_API_KEY", "test-key")
 
 
 def test_vad_engine_defaults_to_the_neural_detector(

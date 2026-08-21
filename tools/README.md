@@ -88,6 +88,6 @@ Observation defaults live in `andy-lab-common.sh`. Supported overrides include
 `ANDY_AUDIO_SINK`, `ANDY_TTS_URL`, `ANDY_TTS_VOICE`, `ANDY_ASR_URL`,
 `ANDY_DIAGNOSTIC_SSH_HOST`, `ANDY_VOICE_SERVER_URL`, and
 `ANDY_VOICE_SERVER_SERVICE`. Root `.env` is the server operator overlay and
-must supply `OLLAMA_API_KEY`; the native-API key comes from
+must supply `ANDY_LLM_API_KEY`; the native-API key comes from
 `firmware/secrets.yaml`. Deployment-specific environment contracts are in
 `server/deploy/production.env.example`.

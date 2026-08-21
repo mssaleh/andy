@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import BytesIO
 import struct
 import wave
@@ -213,3 +214,78 @@ def test_openai_asr_refuses_to_be_built_without_a_model() -> None:
 
     with pytest.raises(ValueError, match="model"):
         OpenAIAudioASR("http://recogniser.test", model="")
+
+
+@pytest.mark.asyncio
+async def test_azure_dialect_sends_what_azure_accepts() -> None:
+    """Azure rejects `max_tokens` and any temperature, and enforces a schema.
+
+    Every one of these is a hard 400 rather than a degraded answer, so the
+    payload is asserted rather than trusted.
+    """
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"kind":"chat"}'}}]},
+        )
+
+    schema = {"type": "object", "properties": {"kind": {"type": "string"}}}
+    provider = OpenAIChat(
+        "https://example.test/openai/v1",
+        "gpt-5.6-luna",
+        "key",
+        api="azure",
+        json_schema=schema,
+    )
+    await provider._client.aclose()
+    provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        assert await provider.complete([{"role": "user", "content": "hi"}])
+    finally:
+        await provider.aclose()
+
+    assert seen["max_completion_tokens"] == 192
+    assert "max_tokens" not in seen
+    assert "temperature" not in seen
+    assert seen["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "decision", "strict": True, "schema": schema},
+    }
+
+
+@pytest.mark.asyncio
+async def test_ollama_dialect_omits_a_schema_it_would_ignore() -> None:
+    """Ollama Cloud does not support structured outputs, so none is claimed.
+
+    Sending one would be accepted and silently dropped, which reads in the
+    payload like a guarantee that is not there.
+    """
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "hello"}}]}
+        )
+
+    provider = OpenAIChat(
+        "https://example.test/v1",
+        "glm-5.2",
+        "key",
+        api="ollama",
+        json_schema={"type": "object"},
+    )
+    await provider._client.aclose()
+    provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        assert await provider.complete([{"role": "user", "content": "hi"}]) == "hello"
+    finally:
+        await provider.aclose()
+
+    assert seen["max_tokens"] == 192
+    assert "max_completion_tokens" not in seen
+    assert "response_format" not in seen
+    assert "temperature" not in seen

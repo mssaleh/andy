@@ -23,8 +23,10 @@ EXPECTED_KEYS = (
     "ANDY_ASR_LANGUAGE",
     "ANDY_TTS_URL",
     "ANDY_TTS_VOICE",
+    "ANDY_LLM_API",
     "ANDY_LLM_URL",
     "ANDY_LLM_MODEL",
+    "ANDY_LLM_API_KEY",
     "ANDY_LLM_REASONING",
     "ANDY_SYSTEM_PROMPT",
     "ANDY_AGENT_ENABLED",
@@ -39,14 +41,17 @@ EXPECTED_KEYS = (
     "ANDY_VAD_NOISE_RATIO",
     "ANDY_SESSION_IDLE_SECONDS",
     "ANDY_STATE_DIR",
-    "OLLAMA_API_KEY",
 )
 
 #: Keys that must be present but may legitimately carry no value. A list of MCP
 #: servers is usually none, and the recogniser only names a model when it is
 #: one that serves several; demanding a placeholder would be a lie.
 OPTIONAL_KEYS = frozenset(
-    {"ANDY_MCP_SERVERS", "ANDY_ASR_MODEL", "ANDY_OWL_URL"}
+    {
+        "ANDY_MCP_SERVERS",
+        "ANDY_ASR_MODEL",
+        "ANDY_OWL_URL",
+    }
 )
 _KEY_PATTERN = re.compile(r"[A-Z][A-Z0-9_]*")
 _PLACEHOLDERS = {"CHANGE_ME"}

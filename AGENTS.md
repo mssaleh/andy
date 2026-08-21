@@ -88,8 +88,11 @@
   is louder than the speech it drowns. Empty recogniser results are ordinary
   ambient events, not device errors.
 - Every non-empty transcript goes to a conservative calibrated-command router
-  or GLM-5.2. The model chooses `ignore`, `wait`, `end_context`, `reply`,
-  `motion`, or explicit `sleep`.
+  or the configured language model. The model chooses `ignore`, `wait`,
+  `end_context`, `reply`, `motion`, or explicit `sleep`.
+- `ANDY_LLM_API` selects the backend dialect. Azure enforces the decision
+  schema and honours `tool_choice`, so the model cannot answer out of format;
+  Ollama Cloud supports neither, and the repair and salvage paths carry it.
 - `motion` answers from the gate and never reaches the agent's tools, so it is
   only for a request that is a movement and nothing else. A request that also
   asks for anything else is `reply`, and the agent moves by naming a movement

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from fastapi.responses import Response, StreamingResponse
 
 from . import __version__
-from .actions import ActionDecision, AgentActions, DecisionKind
+from .actions import DECISION_SCHEMA, ActionDecision, AgentActions, DecisionKind
 from .config import Config
 from .media import AudioStore, stream_audio
 from .memory import MemoryStore
@@ -60,7 +60,9 @@ async def lifespan(app: FastAPI):
         config.llm_url,
         config.llm_model,
         config.llm_key,
+        api=config.llm_api,
         reasoning_effort=config.llm_reasoning,
+        json_schema=DECISION_SCHEMA,
     )
     tts = KokoroTTS(config.tts_url, voice=config.tts_voice)
     bridge: ESPHomeBridge | None = None
@@ -104,6 +106,7 @@ async def lifespan(app: FastAPI):
                 base_url=config.vlm_url,
                 model=config.vlm_model,
                 api_key=config.llm_key,
+                api=config.llm_api,
                 detector_url=config.owl_url,
             )
         if config.agent_enabled:

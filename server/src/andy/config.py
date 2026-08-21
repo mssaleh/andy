@@ -210,6 +210,7 @@ class Config:
     asr_language: str
     tts_url: str
     tts_voice: str
+    llm_api: str
     llm_url: str
     llm_model: str
     llm_key: str
@@ -252,9 +253,12 @@ class Config:
             asr_language=_value("ANDY_ASR_LANGUAGE", "en"),
             tts_url=_http_url("ANDY_TTS_URL", "http://127.0.0.1:8880"),
             tts_voice=_value("ANDY_TTS_VOICE", "af_heart"),
+            llm_api=_choice(
+                "ANDY_LLM_API", "ollama", allowed=("ollama", "azure")
+            ),
             llm_url=_http_url("ANDY_LLM_URL", "https://ollama.com/v1"),
             llm_model=_value("ANDY_LLM_MODEL", "glm-5.2"),
-            llm_key=_value("OLLAMA_API_KEY"),
+            llm_key=_value("ANDY_LLM_API_KEY"),
             llm_reasoning=_value("ANDY_LLM_REASONING", "none"),
             agent_enabled=_boolean("ANDY_AGENT_ENABLED", True),
             vision_enabled=_boolean("ANDY_VISION_ENABLED", False),
@@ -313,7 +317,7 @@ class Config:
             "ANDY_LLM_MODEL": self.llm_model,
             "ANDY_VAD_ENGINE": self.vad_engine,
             "ANDY_SYSTEM_PROMPT": self.system_prompt,
-            "OLLAMA_API_KEY": self.llm_key,
+            "ANDY_LLM_API_KEY": self.llm_key,
         }
         if self.device_enabled:
             required.update(
