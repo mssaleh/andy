@@ -25,7 +25,7 @@ sensor:
     update_interval: 10s
     auto_mode: true
     glass_attenuation_factor: 2.5
-    ps_cooldown: 5s
+    ps_cooldown: 60s
     ps_high_threshold: 500
     ps_low_threshold: 300
     ambient_light:
@@ -39,7 +39,7 @@ sensor:
           id: presence
           state: true
       - lambda: |-
-          id(set_emotion)->execute(andy::E_SURPRISED, 80, 6, andy::P_INTERACT);
+          id(set_emotion)->execute(andy::E_SURPRISED, 80, 4, andy::P_AGENT);
     on_ps_low_threshold:
       - binary_sensor.template.publish:
           id: presence

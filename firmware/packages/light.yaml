@@ -118,6 +118,16 @@ script:
                   pulse = profile.ring_pulse;
                   // Intensity sets how loudly the ring states the mood.
                   brightness = 0.10f + 0.40f * (id(emotion_intensity) / 100.0f);
+                  // The hue is the mood; the brightness says whether Andy can
+                  // still hear. His microphone really is stopped while he
+                  // announces, and orange alone could not tell the two apart:
+                  // a mood outlasts the speech that caused it by seconds.
+                  const bool deaf = state == "announcing" ||
+                                    state.rfind("capture pause", 0) == 0;
+                  if (deaf) {
+                    brightness = 0.05f;
+                    pulse = false;
+                  }
                 }
 
                 // Each repaint costs about 34 ms of blocked main loop, so skip
