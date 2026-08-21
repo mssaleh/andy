@@ -264,6 +264,9 @@ class DeviceState:
     def has_button(self, object_id: str) -> bool:
         return object_id in self._buttons
 
+    def has_light(self, object_id: str) -> bool:
+        return object_id in self._lights
+
     def has_camera(self) -> bool:
         return bool(self._cameras)
 
@@ -316,6 +319,28 @@ class DeviceState:
         if not self._connected:
             raise RuntimeError(f"device disconnected while setting {object_id}")
         self._client.number_command(entity.key, clamped, device_id=entity.device_id)
+
+    def set_light(
+        self, object_id: str, *, on: bool, brightness: float | None = None
+    ) -> None:
+        """Turn one of Andy's lights on or off, optionally at a brightness.
+
+        The screen backlight is a light rather than a switch, so dimming it is
+        a real brightness and not only an off. Brightness is ignored when the
+        light is being turned off, because a level on a dark lamp is a value
+        nobody can see and would only confuse the next reader of the state.
+        """
+        entity = self._lights.get(object_id)
+        if entity is None:
+            raise RuntimeError(f"device has no light {object_id}")
+        if not self._connected:
+            raise RuntimeError(f"device disconnected while setting {object_id}")
+        level = None
+        if on and brightness is not None:
+            level = min(max(brightness, 0.0), 1.0)
+        self._client.light_command(
+            entity.key, state=on, brightness=level, device_id=entity.device_id
+        )
 
     def select_options(self, object_id: str) -> tuple[str, ...]:
         entity = self._selects.get(object_id)

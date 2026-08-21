@@ -63,6 +63,15 @@ IDIOM_CLAIM_TIMEOUT = 2.5
 RESET_BUTTON = "emotion_reset"
 
 
+#: Andy's screen backlight. A light rather than a switch, so "dim" can mean a
+#: level rather than only off, which is what someone asks for at night.
+SCREEN_LIGHT = "lcd_backlight"
+#: Low enough to stop the screen lighting a dark room, high enough that Andy's
+#: face is still there when you look at him. Off entirely is a robot that
+#: looks switched off, which is not what dimming was asked for.
+SCREEN_DIM_BRIGHTNESS = 0.12
+
+
 class AttentionAction(StrEnum):
     """Whether Andy is listening. The tap on his screen does the same thing."""
 
@@ -195,6 +204,29 @@ class EffectController:
         self._device.press(ATTENTION_BUTTONS[action])
         self._applied += 1
         self._last = action.value
+        return self._last
+
+    def screen_available(self) -> bool:
+        return self._enabled and self._device.has_light(SCREEN_LIGHT)
+
+    def set_screen(self, *, on: bool, dim: bool = False) -> str:
+        """Turn Andy's screen off, dim, or fully back on.
+
+        Asked for at night, when a lit face across a dark room is the thing
+        keeping someone awake. Dim is preferred to off for a request to dim:
+        a dark screen reads as a robot that has crashed, and the person asked
+        for less light, not for Andy to look broken.
+        """
+        if not self._enabled:
+            self._rejected += 1
+            raise RuntimeError("effects are disabled")
+        if not self._device.has_light(SCREEN_LIGHT):
+            self._rejected += 1
+            raise RuntimeError("device has no screen backlight")
+        brightness = SCREEN_DIM_BRIGHTNESS if (on and dim) else (1.0 if on else None)
+        self._device.set_light(SCREEN_LIGHT, on=on, brightness=brightness)
+        self._applied += 1
+        self._last = "screen off" if not on else ("screen dim" if dim else "screen bright")
         return self._last
 
     async def wear_for_motion(self, action: str) -> str | None:

@@ -388,6 +388,24 @@ def build_agent(
             ) from None
 
     @agent.tool
+    def set_the_screen(ctx: RunContext[AndyDeps], level: str) -> str:
+        """Dim, darken or restore Andy's own screen. `level` is dim, off or on.
+
+        For a request about Andy's screen or face being too bright, usually at
+        night. Prefer `dim` to `off`: a dark screen looks like a robot that has
+        crashed, and someone asking for less light did not ask for that.
+        """
+        wanted = level.strip().casefold()
+        if wanted not in {"dim", "off", "on"}:
+            raise ModelRetry("level must be one of: dim, off, on")
+        try:
+            return ctx.deps.effects.set_screen(
+                on=wanted != "off", dim=wanted == "dim"
+            )
+        except RuntimeError as exc:
+            raise ModelRetry(str(exc)) from None
+
+    @agent.tool
     def sense_the_room(ctx: RunContext[AndyDeps]) -> dict[str, Any]:
         """Read Andy's sensors: who is present, how bright the room is, battery.
 
@@ -634,6 +652,11 @@ class AgentConversation:
             "check his own hardware: motor temperature, power draw, memory, "
             "faults, and whether he is upright"
         )
+        if self._deps.effects.screen_available():
+            able.append(
+                "dim his own screen, darken it or turn it back up, for when "
+                "his face is too bright in a dark room"
+            )
         if self._agent.toolsets:
             able.append("use the external tools he is connected to")
         return tuple(able)

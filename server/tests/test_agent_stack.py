@@ -20,6 +20,8 @@ class FakeDevice:
         self.selected: str | None = None
         self.numbers: dict[str, float] = {}
         self.pressed: list[str] = []
+        self.lights: tuple[str, bool, float | None] | None = None
+        self.has_backlight = True
         self._states: dict[str, object] = {}
         self._listeners = []
 
@@ -37,6 +39,12 @@ class FakeDevice:
 
     def has_button(self, object_id: str) -> bool:
         return True
+
+    def has_light(self, object_id: str) -> bool:
+        return self.has_backlight
+
+    def set_light(self, object_id, *, on, brightness=None) -> None:
+        self.lights = (object_id, on, brightness)
 
     def get(self, object_id: str):
         if object_id == "motion_program":
@@ -528,3 +536,37 @@ def test_text_answer_refuses_a_half_formed_structured_answer() -> None:
     assert _text_answer([Msg(TextPart('{"kind": "chat", "speech": "hi"'))]) is None
     assert _text_answer([Msg(TextPart("```json\n{}"))]) is None
     assert _text_answer([]) is None
+
+
+def test_dimming_the_screen_leaves_a_face_to_look_at() -> None:
+    """Someone asking for less light did not ask for a robot that looks dead.
+
+    Off is available and honoured when it is what was asked for, but `dim`
+    keeps the backlight on at a low level so Andy still has a face.
+    """
+    from andy.effects import SCREEN_DIM_BRIGHTNESS, SCREEN_LIGHT
+
+    device = FakeDevice()
+    effects = EffectController(device)  # type: ignore[arg-type]
+
+    assert effects.set_screen(on=True, dim=True) == "screen dim"
+    assert device.lights == (SCREEN_LIGHT, True, SCREEN_DIM_BRIGHTNESS)
+    assert 0.0 < SCREEN_DIM_BRIGHTNESS < 0.5
+
+    assert effects.set_screen(on=True) == "screen bright"
+    assert device.lights == (SCREEN_LIGHT, True, 1.0)
+
+    assert effects.set_screen(on=False) == "screen off"
+    assert device.lights == (SCREEN_LIGHT, False, None)
+
+
+def test_a_screen_andy_does_not_have_is_refused_not_faked() -> None:
+    """The gate is told what Andy can do from the objects that are wired."""
+    device = FakeDevice()
+    device.has_backlight = False
+    effects = EffectController(device)  # type: ignore[arg-type]
+
+    assert effects.screen_available() is False
+    with pytest.raises(RuntimeError, match="no screen backlight"):
+        effects.set_screen(on=False)
+    assert device.lights is None
