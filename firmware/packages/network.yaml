@@ -39,6 +39,13 @@ wifi:
       password: !secret wifi_password_2
   power_save_mode: none
   reboot_timeout: 0s
+  # Andy stays on whichever network he associated with at boot, however weak
+  # it has since become, so moving him to another room meant power-cycling him
+  # to be re-picked. These let the access points hand him over instead. Both
+  # need 802.11k/v on the network: where it is absent they cost nothing and
+  # change nothing.
+  enable_btm: true
+  enable_rrm: true
 
 network:
   enable_high_performance: true

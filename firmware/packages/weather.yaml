@@ -161,7 +161,14 @@ interval:
   # know what it is like outside.
   - interval: 30min
     then:
-      - script.execute: read_the_weather
+      - if:
+          condition:
+            # `http_request` blocks the main loop, measured at up to 916 ms
+            # against a motion supervisor that runs every 25 ms. The weather
+            # keeps; a movement in flight does not.
+            lambda: "return !id(motion_active) && !id(motion_program_active);"
+          then:
+            - script.execute: read_the_weather
 
   - interval: 2min
     then:
@@ -169,6 +176,6 @@ interval:
           condition:
             and:
               - wifi.connected:
-              - lambda: return !id(weather_known);
+              - lambda: "return !id(weather_known) && !id(motion_active) && !id(motion_program_active);"
           then:
             - script.execute: read_the_weather

@@ -214,7 +214,12 @@ interval:
     then:
       - if:
           condition:
-            wifi.connected:
+            and:
+              - wifi.connected:
+              # `http_request` blocks the main loop, measured at up to 916 ms
+              # against a motion supervisor that runs every 25 ms. Asking the
+              # internet where Andy is can wait for the head to stop.
+              - lambda: "return !id(motion_active) && !id(motion_program_active);"
           then:
             - script.execute: learn_where_i_am
 
@@ -226,6 +231,6 @@ interval:
           condition:
             and:
               - wifi.connected:
-              - lambda: return !id(located_this_boot);
+              - lambda: "return !id(located_this_boot) && !id(motion_active) && !id(motion_program_active);"
           then:
             - script.execute: learn_where_i_am

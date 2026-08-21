@@ -437,7 +437,13 @@ class VADConfig:
     min_voiced_ms: int = 200
     end_silence_ms: int = 800
     start_timeout_ms: int = 10_000
-    max_duration_ms: int = 15_000
+    #: A room with a television in it never falls quiet for `end_silence_ms`,
+    #: so a segment runs to this bound and arrives holding two speakers and
+    #: the television. Measured at 10.2 s in that room. Shorter than a
+    #: sentence someone would actually address to Andy, and the reply starts
+    #: this many seconds after they began rather than whenever the room
+    #: happens to pause.
+    max_duration_ms: int = 10_000
     max_window_ms: int = 30_000
     energy: EnergyConfig | None = None
 
