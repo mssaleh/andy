@@ -1,9 +1,10 @@
-# Battery-backed time and the WireGuard tunnel to the production server.
+# Battery-backed time, Wi-Fi, the encrypted native API, OTA, the local web
+# server, and the WireGuard tunnel to the production server.
 #
 # WireGuard needs a plausible clock before its first handshake, so the BM8563
-# supplies boot time and SNTP writes back to it after every sync. Only the
-# production image includes this package: the tunnel address and key identify
-# this specific robot, and a second device presenting them would collide.
+# supplies boot time and SNTP writes back to it after every sync. Both images
+# carry this package: the tunnel address and key identify this specific robot,
+# so the bench image must never run on a second device while Andy is up.
 
 esphome:
   on_boot:

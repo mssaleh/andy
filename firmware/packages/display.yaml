@@ -9,14 +9,6 @@
 # painted as small corner marks on top of whatever Andy is feeling, so they stay
 # unambiguous instead of competing with expression.
 
-globals:
-  # Set by the shake reflex in `imu.yaml`. The face is redrawn on demand, so the
-  # reflex forces an update when it starts and when it expires.
-  - id: face_dizzy_until_ms
-    type: uint32_t
-    restore_value: false
-    initial_value: "0"
-
 esphome:
   on_boot:
     - priority: 600
@@ -70,24 +62,6 @@ display:
       const std::string state = id(voice_state).state;
       const bool disconnected = state.find("disconnected") != std::string::npos;
       const bool muted = state == "muted";
-      const bool dizzy = (int32_t)(millis() - id(face_dizzy_until_ms)) < 0;
-
-      if (dizzy) {
-        // Spiral eyes and a wavy mouth: Andy has been picked up and shaken.
-        it.fill(Color(30, 12, 40));
-        const Color giddy(255, 190, 90);
-        for (int eye = 0; eye < 2; eye++) {
-          const int cx = eye == 0 ? 96 : 224;
-          for (int r = 6; r <= 30; r += 6) {
-            it.circle(cx, 98, r, giddy);
-          }
-        }
-        for (int x = 124; x < 196; x += 8) {
-          it.line(x, 176 + ((x / 8) % 2 ? -7 : 7),
-                  x + 8, 176 + ((x / 8) % 2 ? 7 : -7), giddy);
-        }
-        return;
-      }
 
       const auto &profile = andy::EMOTIONS[id(emotion_index)];
       // Intensity drives brightness, so the same mood reads as a murmur or a

@@ -195,6 +195,36 @@ def test_malformed_agent_decisions_fail_closed(raw: str) -> None:
         parse_agent_decision(raw)
 
 
+
+def test_an_overlong_reply_is_trimmed_on_the_repair_pass_not_dropped() -> None:
+    """A second over-long answer is shortened rather than losing the turn.
+
+    The first pass still fails closed, so the model is asked once to be brief.
+    If it answers long again, silence would read to the person as a robot that
+    ignored them, so the answer is cut at the last sentence that fits.
+    """
+    sentences = "This is a whole sentence. " * 40
+    raw = json.dumps({"kind": "reply", "reply": sentences, "motion": None})
+
+    with pytest.raises(ValueError):
+        parse_agent_decision(raw)
+
+    decision = parse_agent_decision(raw, trim_overlong=True)
+
+    assert 0 < len(decision.reply) <= 500
+    assert decision.reply.endswith(".")
+    assert "This is a whole sentence." in decision.reply
+
+
+def test_trimming_never_returns_a_bare_fragment() -> None:
+    """With no sentence ending to cut at, the window is used whole."""
+    decision = parse_agent_decision(
+        json.dumps({"kind": "reply", "reply": "x" * 900, "motion": None}),
+        trim_overlong=True,
+    )
+
+    assert len(decision.reply) == 500
+
 class Executor:
     def __init__(self, *, failure: Exception | None = None) -> None:
         self.failure = failure

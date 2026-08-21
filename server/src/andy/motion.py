@@ -214,13 +214,49 @@ class MotionController:
             return await self._execute_firmware_program(action)
         return await self._execute_pose_by_pose(action)
 
+    def _assert_not_inhibited(self) -> None:
+        """Refuse at once when the firmware has latched a motion fault.
+
+        The latch clears only when the `Clear motion inhibit` button is pressed
+        or the device reconnects, and neither can happen while this coroutine
+        holds the motion lock. Waiting for `_idle` therefore spends the whole
+        idle timeout to arrive at a failure that was knowable on the first
+        read, and it holds the lock against every request queued behind it.
+        """
+        if self._device.get("motion_inhibited") is True:
+            raise RuntimeError(
+                "motion is inhibited by a latched firmware fault: press "
+                "'Clear motion inhibit' or reconnect the device"
+            )
+
+    async def _wait_for_idle(self) -> None:
+        """Wait for the device to be free, and name what held it if it is not.
+
+        `_idle` reads three flags and a bare timeout names none of them, yet
+        they point at different places: a latched fault is a servo problem, a
+        held program means the firmware is running choreography of its own,
+        and a busy flag means a pose is still in flight. None of that is
+        recoverable from the timeout after the fact.
+        """
+        device = self._device
+        try:
+            await device.wait_for(self._idle, self._idle_timeout, "motion idle")
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"{exc}: motion_active={device.get('motion_active')!r} "
+                f"motion_inhibited={device.get('motion_inhibited')!r} "
+                f"motion_program={device.get('motion_program')!r} "
+                f"motion_state={device.get('motion_state')!r}"
+            ) from exc
+
     async def _execute_firmware_program(self, action: MotionAction) -> str:
         device = self._device
         async with self._lock:
             await device.wait_for(
                 lambda: device.ready, self._idle_timeout, "initial motion state"
             )
-            await device.wait_for(self._idle, self._idle_timeout, "motion idle")
+            self._assert_not_inhibited()
+            await self._wait_for_idle()
             self._active_action = action
             before_starts = device.counter("motion_starts")
             before_completions = device.counter("motion_completions")
@@ -294,11 +330,8 @@ class MotionController:
             await device.wait_for(
                 lambda: device.ready, self._idle_timeout, "initial motion state"
             )
-            await device.wait_for(
-                self._idle,
-                self._idle_timeout,
-                "motion idle",
-            )
+            self._assert_not_inhibited()
+            await self._wait_for_idle()
             self._active_action = action
             self._program_steps = len(program)
             try:

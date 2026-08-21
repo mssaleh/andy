@@ -480,3 +480,51 @@ def test_andy_is_told_he_has_the_body_he_is_speaking_through() -> None:
     assert "never deny having a part of your body that you are using" in (
         SYSTEM_PROMPT.casefold()
     )
+
+
+
+
+
+
+def test_text_answer_prefers_the_last_speakable_part() -> None:
+    from andy.agent import _text_answer
+
+    class Part:
+        def __init__(self, content: str, kind: str = "TextPart") -> None:
+            self.content = content
+            self.__class__.__name__ = kind
+
+    class TextPart:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    class Msg:
+        def __init__(self, *parts: object) -> None:
+            self.parts = parts
+
+    messages = [
+        Msg(TextPart("**Hold on**, let me think.")),
+        Msg(TextPart('{"kind": "chat"')),
+        Msg(TextPart("Still getting those jumbled words! I am right here.")),
+    ]
+
+    assert (
+        _text_answer(messages) == "Still getting those jumbled words! I am right here."
+    )
+
+
+def test_text_answer_refuses_a_half_formed_structured_answer() -> None:
+    """A partial object read out loud is worse than falling back."""
+    from andy.agent import _text_answer
+
+    class TextPart:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    class Msg:
+        def __init__(self, *parts: object) -> None:
+            self.parts = parts
+
+    assert _text_answer([Msg(TextPart('{"kind": "chat", "speech": "hi"'))]) is None
+    assert _text_answer([Msg(TextPart("```json\n{}"))]) is None
+    assert _text_answer([]) is None

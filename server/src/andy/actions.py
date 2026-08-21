@@ -331,7 +331,23 @@ class MotionExecutor(Protocol):
     def snapshot(self) -> dict[str, object]: ...
 
 
-def parse_agent_decision(raw: str) -> ActionDecision:
+def trim_to_sentence(text: str, limit: int = MAX_REPLY_CHARS) -> str:
+    """Cut an over-long reply at the last sentence that fits.
+
+    Reached only after the model has already been asked once to be brief, so
+    the remaining choice is a shorter answer or none at all. Silence reads to
+    the person as a robot that ignored them, which is worse than an answer
+    that stops early. A fragment is worse still, so a cut is taken only at a
+    sentence ending in the back half of the window.
+    """
+    window = text[:limit]
+    cut = max(window.rfind("."), window.rfind("!"), window.rfind("?"))
+    if cut >= limit // 2:
+        return window[: cut + 1].strip()
+    return window.rstrip()
+
+
+def parse_agent_decision(raw: str, *, trim_overlong: bool = False) -> ActionDecision:
     """Parse an LLM decision while keeping physical actions on an allowlist."""
     text = raw.strip()
     if text.startswith("```"):
@@ -364,7 +380,9 @@ def parse_agent_decision(raw: str) -> ActionDecision:
     reply = reply_value.strip() if reply_value is not None else ""
     motion = motion_value.strip().casefold() if motion_value is not None else ""
     if len(reply) > MAX_REPLY_CHARS:
-        raise ValueError("agent decision reply is too long for speech")
+        if not trim_overlong:
+            raise ValueError("agent decision reply is too long for speech")
+        reply = trim_to_sentence(reply)
 
     non_response_kinds = {
         "ignore": DecisionKind.IGNORE,

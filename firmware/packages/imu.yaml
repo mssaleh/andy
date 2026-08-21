@@ -124,7 +124,6 @@ interval:
           id(shake_confirmations) = 0;
           id(shake_cooldown_until_ms) = now + 3000;
           id(shake_detected).publish_state(true);
-          id(face_dizzy_until_ms) = now + 3000;
           ESP_LOGW("andy.shake", "Shake detected at %.2f g; stopping motion",
                    magnitude);
           id(motion_emergency_stop_button).press();

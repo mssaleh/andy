@@ -14,23 +14,32 @@ brightness, a duration or an entity id from the model.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import logging
 import re
 from typing import Any
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, ModelRetry, RunContext
+from pydantic_ai import Agent, ModelRetry, RunContext, capture_run_messages
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from .actions import MOTION_DESCRIPTIONS, MotionAction
+from .actions import MOTION_DESCRIPTIONS, MotionAction, trim_to_sentence
 from .device import DeviceState
 from .effects import AttentionAction, EffectController, EmotionRequest
 
 log = logging.getLogger("andy.agent")
 
 MAX_SPOKEN_CHARS = 320
+
+#: How long the agent may spend before Andy has to say something. The retries
+#: that rescue a malformed answer are worth keeping, but they are round trips:
+#: measured turns that needed one averaged 10.7 s against 5.8 s clean, and the
+#: worst reached 26 s. A person waiting on a reply reads that as no reply, so
+#: the run is bounded by time and whatever the model has already said is used.
+AGENT_DEADLINE_SECONDS = 12.0
 
 
 class Reply(BaseModel):
@@ -130,6 +139,33 @@ def spoken_text(raw: str) -> str:
     text = _MARKDOWN.sub("", text)
     text = re.sub(r"\s*\n+\s*", " ", text)
     return re.sub(r"\s{2,}", " ", text).strip()
+
+
+def _text_answer(messages: list[Any]) -> str | None:
+    """The last thing the model actually said, if it is safe to say aloud.
+
+    Ollama does not honour `tool_choice`, so nothing forces this model to
+    answer through its output tool and it sometimes replies in prose instead.
+    The prose is usually a perfectly good thing to say, and throwing it away
+    for a stock line loses an answer the model had already written.
+
+    Anything that looks like the structured answer rather than speech is
+    refused: a half-formed object read out loud is worse than falling back.
+    """
+    for message in reversed(messages):
+        for part in reversed(getattr(message, "parts", ())):
+            if part.__class__.__name__ != "TextPart":
+                continue
+            text = str(getattr(part, "content", "")).strip()
+            if not text or text.startswith(("{", "[", "```")):
+                continue
+            # The same treatment every other reply gets: Andy is heard, not
+            # read, and this text never passed the output validator.
+            cleaned = spoken_text(text)
+            if not cleaned:
+                continue
+            return trim_to_sentence(cleaned, MAX_SPOKEN_CHARS)
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -622,13 +658,31 @@ class AgentConversation:
                 messages.append(ModelResponse(parts=[TextPart(content=content)]))
 
         self._runs += 1
-        try:
-            result = await self._agent.run(
-                transcript, deps=self._deps, message_history=messages or None
-            )
-        except Exception:
-            self._failures += 1
-            raise
+        with capture_run_messages() as captured:
+            try:
+                async with asyncio.timeout(AGENT_DEADLINE_SECONDS):
+                    result = await self._agent.run(
+                        transcript, deps=self._deps, message_history=messages or None
+                    )
+            except (TimeoutError, UnexpectedModelBehavior):
+                # Either the retries ran out or they ran long. Both mean the
+                # model never produced the structured answer, and it usually
+                # said something sensible on the way. That is closer to an
+                # answer than the gate's stock line, so it is spoken with no
+                # feeling and no movement: the model chose neither.
+                spoken = _text_answer(captured)
+                if spoken is None:
+                    self._failures += 1
+                    raise
+                self._failures += 1
+                log.warning(
+                    "agent never reached its output format; speaking its text: %r",
+                    spoken[:120],
+                )
+                return AgentTurn(speech=spoken)
+            except Exception:
+                self._failures += 1
+                raise
         # Which tools, not how many. A turn that claims to have set a reminder
         # and a turn that set one are indistinguishable from a count, and the
         # difference between them is the whole question when Andy says he has

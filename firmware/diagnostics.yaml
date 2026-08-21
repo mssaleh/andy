@@ -1,9 +1,9 @@
 # The bench bring-up image.
 #
-# It carries the exact production board, audio, display, and motion packages, so
-# what passes here is what production runs. WireGuard is deliberately absent:
-# the tunnel address and key identify the production robot, and a second device
-# presenting them would collide.
+# It carries the exact production board, audio, display, motion, and network
+# packages, so what passes here is what production runs. That includes the
+# WireGuard tunnel, whose address and key identify the production robot: never
+# run this image on a second device while Andy is up.
 #
 # On top of production it adds an internal I2C inventory covering every device
 # `knowledge/StackChan.md` and `knowledge/StackChan-HA.md` place on the internal

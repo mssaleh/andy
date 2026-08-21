@@ -72,8 +72,10 @@ class Client:
     def subscribe_states(self, callback) -> None:
         self.callback = callback
 
-    def emit_initial(self, *, inhibited: bool = False) -> None:
-        self.emit(BinarySensorState(key=10, state=False))
+    def emit_initial(
+        self, *, inhibited: bool = False, active: bool = False
+    ) -> None:
+        self.emit(BinarySensorState(key=10, state=active))
         self.emit(BinarySensorState(key=11, state=inhibited))
         self.emit(TextSensorState(key=12, state="idle: torque released; servo rail off"))
         self.emit(SensorState(key=13, state=float(self.starts)))
@@ -182,13 +184,13 @@ def _stack(client, **kwargs):
 async def test_fixed_motion_waits_for_voice_idle_and_verifies_completion() -> None:
     client = Client()
     _device, controller, speaker = _stack(client, idle_timeout=0.1, motion_timeout=0.1)
-    client.emit_initial(inhibited=True)
+    client.emit_initial(active=True)
 
     task = asyncio.create_task(controller.execute(MotionAction.YAW_POSITIVE_10))
     await asyncio.sleep(0)
     assert client.commands == []
 
-    client.emit(BinarySensorState(key=11, state=False))
+    client.emit(BinarySensorState(key=10, state=False))
     status = await task
 
     assert status.startswith("complete: yaw=495/495")
@@ -330,7 +332,7 @@ async def test_cancelled_announcement_stops_device_playback() -> None:
 async def test_disconnect_aborts_pending_motion_without_a_command() -> None:
     client = Client()
     _device, controller, speaker = _stack(client, idle_timeout=0.1, motion_timeout=0.1)
-    client.emit_initial(inhibited=True)
+    client.emit_initial(active=True)
 
     task = asyncio.create_task(controller.execute(MotionAction.HOME))
     await asyncio.sleep(0)
@@ -340,6 +342,30 @@ async def test_disconnect_aborts_pending_motion_without_a_command() -> None:
         await task
     assert client.commands == []
 
+
+@pytest.mark.asyncio
+async def test_latched_inhibit_refuses_immediately_without_holding_the_lock() -> None:
+    """A latched fault is answered now, not after the idle timeout expires.
+
+    The firmware clears `motion_inhibited` only on the `Clear motion inhibit`
+    button or a reboot, so nothing that happens inside the wait can clear it.
+    Waiting spends the whole idle timeout on a knowable refusal and holds the
+    motion lock against every request queued behind it.
+    """
+    client = Client()
+    _device, controller, speaker = _stack(client, idle_timeout=30.0, motion_timeout=30.0)
+    client.emit_initial(inhibited=True)
+
+    with pytest.raises(RuntimeError, match="inhibited by a latched firmware fault"):
+        await asyncio.wait_for(controller.execute(MotionAction.HOME), timeout=1.0)
+    assert client.commands == []
+
+    # The lock is free, so the next request is answered just as promptly.
+    with pytest.raises(RuntimeError, match="inhibited by a latched firmware fault"):
+        await asyncio.wait_for(
+            controller.execute(MotionAction.YAW_POSITIVE_10), timeout=1.0
+        )
+    assert client.commands == []
 
 def test_combined_firmware_entities_are_mandatory() -> None:
     client = Client()

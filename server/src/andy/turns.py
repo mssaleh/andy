@@ -783,9 +783,16 @@ class TurnCoordinator:
             try:
                 return parse_agent_decision(raw)
             except ValueError as first_error:
+                # The text itself, not just the complaint about it. Which of
+                # these a repair can fix depends entirely on what came back:
+                # a fenced or prefixed object is recoverable by parsing alone,
+                # while conversational prose means the model left the format
+                # and a second request is the only way back.
                 log.warning(
-                    "requesting one bounded repair for malformed agent decision: %s",
+                    "requesting one bounded repair for malformed agent decision:"
+                    " %s: %r",
                     first_error,
+                    raw[:300],
                 )
                 repair_messages = [
                     *messages,
@@ -793,7 +800,10 @@ class TurnCoordinator:
                     {"role": "user", "content": DECISION_REPAIR_PROMPT},
                 ]
                 repaired = await self._llm.complete(repair_messages)
-                return parse_agent_decision(repaired)
+                # The repair already carried the instruction to be brief. If it
+                # came back long anyway, a shortened answer reaches the person
+                # and a raised error does not.
+                return parse_agent_decision(repaired, trim_overlong=True)
 
     def _remember(self, transcript: str, reply: str) -> None:
         self._history.extend(

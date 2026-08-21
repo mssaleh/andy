@@ -6,8 +6,10 @@
   deployment scripts, and closed-loop verification tooling.
 - `firmware/andy.yaml` is the production image and `firmware/diagnostics.yaml`
   is the bench image. Both are composed from `firmware/packages/`, so a change
-  to a package reaches production. Diagnostics adds bench-only probes and omits
-  the WireGuard tunnel; it does not define production interaction behavior.
+  to a package reaches production. Diagnostics adds bench-only probes and
+  carries the same WireGuard tunnel as production, so it must never run on a
+  second device while Andy is up; it does not define production interaction
+  behavior.
 - Sibling repositories are read-only references. Do not import from or edit
   them.
 - `knowledge/` is a permanent read-only reference archive. Never delete,
