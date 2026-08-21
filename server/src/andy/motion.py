@@ -276,11 +276,20 @@ class MotionController:
                 # a tunnel round trip away, so reading the counters the moment
                 # the flag clears reads the *previous* run's values and reports
                 # a fault that never happened.
+                #
+                # A fault is also an ending. The firmware abandons a faulted
+                # program without ever publishing the completion this waits
+                # for, so watching only for success spent the whole timeout on
+                # a failure the counter had already reported, and Andy stood
+                # still for forty-five seconds after saying he would move.
                 await device.wait_for(
-                    lambda: device.get("motion_program") is not True
-                    and device.get("motion_active") is False
-                    and _TERMINAL.match(str(device.get("motion_state") or ""))
-                    is not None,
+                    lambda: device.counter("motion_faults") != before_faults
+                    or (
+                        device.get("motion_program") is not True
+                        and device.get("motion_active") is False
+                        and _TERMINAL.match(str(device.get("motion_state") or ""))
+                        is not None
+                    ),
                     self._idle_timeout,
                     f"{action.value} program completion",
                 )

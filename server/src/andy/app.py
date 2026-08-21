@@ -225,7 +225,7 @@ async def lifespan(app: FastAPI):
     if bridge is not None:
         await bridge.start()
     if bus is not None and arbiter is not None:
-        _install_event_rules(bus, arbiter, conversation, device)
+        _install_event_rules(bus, arbiter, conversation, device, actions)
         bus.start()
     if scheduler is not None:
         scheduler.start()
@@ -249,6 +249,7 @@ def _install_event_rules(
     arbiter: SpeechArbiter,
     conversation: AgentConversation | None,
     device: DeviceState | None,
+    actions: AgentActions | None = None,
 ) -> None:
     """What Andy does about an event, and what he thinks about first.
 
@@ -271,6 +272,10 @@ def _install_event_rules(
             # face and the ring, and announcing it would interrupt whatever
             # the person was actually doing.
             log.warning("motion fault observed: %s", event.value)
+
+    #: Movements dispatched from a proactive turn, held so they are not
+    #: collected while the servos are still moving.
+    proactive_actions: set[asyncio.Task[str]] = set()
 
     async def ask_the_agent(event) -> None:
         if conversation is None:
@@ -300,8 +305,27 @@ def _install_event_rules(
         except Exception:
             log.exception("agent failed on %s", event.kind)
             return
-        if reply:
-            await arbiter.say(reply, Priority.PROACTIVE)
+        # `reply` is a whole turn: what to say, what to wear, and what the
+        # body should do. Only the speech belongs to the arbiter, and the
+        # movement has to be dispatched or the answer promises something that
+        # never happens -- which is the one thing a spoken turn must not do.
+        if reply.speech:
+            await arbiter.say(reply.speech, Priority.PROACTIVE)
+        if reply.movement is not None and actions is not None:
+            authorised = actions.authorize(
+                ActionDecision(
+                    kind=DecisionKind.MOTION, action=reply.movement
+                ),
+                prompt,
+            ).action
+            if authorised is not None:
+                task = asyncio.create_task(
+                    actions.execute(authorised),
+                    name=f"andy-proactive-{authorised.value}",
+                )
+                # A task nobody holds can be collected mid-movement.
+                proactive_actions.add(task)
+                task.add_done_callback(proactive_actions.discard)
 
     bus.on(Route.RULE, fixed_rule)
     bus.on(Route.AGENT, ask_the_agent)
