@@ -20,6 +20,7 @@ from .bus import EventBus, Route
 from .device import DeviceState
 from .effects import EffectController, EmotionRequest
 from .vision import VisionProvider
+from .watch import BackendWatch
 from .motion import MotionController, catalog_snapshot
 from .speaker import SpeakerOutput
 from .providers import KokoroTTS, OpenAIAudioASR, OpenAIChat, WhisperASR
@@ -222,8 +223,11 @@ async def lifespan(app: FastAPI):
     app.state.vision = vision
     app.state.memory = memory
     app.state.scheduler = scheduler
+    watch = BackendWatch(asr=asr, tts=tts, effects=effects)
+    app.state.watch = watch
     if bridge is not None:
         await bridge.start()
+    watch.start()
     if bus is not None and arbiter is not None:
         _install_event_rules(bus, arbiter, conversation, device, actions, effects)
         bus.start()
@@ -232,6 +236,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await watch.stop()
         if scheduler is not None:
             await scheduler.stop()
         if bus is not None:
