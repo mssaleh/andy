@@ -229,9 +229,13 @@ interval:
           condition:
             and:
               - wifi.connected:
-              # `http_request` blocks the main loop, measured at up to 916 ms
-              # against a motion supervisor that runs every 25 ms. Asking the
-              # internet where Andy is can wait for the head to stop.
+              # `http_request` holds the main loop until the whole response has
+              # arrived, measured at 891 ms, against a motion supervisor that
+              # wants it every 25 ms and a speaker with 1.33 s of buffered
+              # announcement. Asking the internet where Andy is can wait for
+              # the head to stop and the sentence to finish.
+              - not:
+                  media_player.is_announcing: andy_media_player
               - lambda: "return !id(motion_active) && !id(motion_program_active);"
           then:
             - script.execute: learn_where_i_am
@@ -244,6 +248,8 @@ interval:
           condition:
             and:
               - wifi.connected:
+              - not:
+                  media_player.is_announcing: andy_media_player
               - lambda: "return !id(located_this_boot) && !id(motion_active) && !id(motion_program_active);"
           then:
             - script.execute: learn_where_i_am

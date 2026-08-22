@@ -163,10 +163,18 @@ interval:
     then:
       - if:
           condition:
-            # `http_request` blocks the main loop, measured at up to 916 ms
-            # against a motion supervisor that runs every 25 ms. The weather
-            # keeps; a movement in flight does not.
-            lambda: "return !id(motion_active) && !id(motion_program_active);"
+            # `http_request` reads the response on the main loop and does not
+            # give it back until the whole body has arrived -- measured at
+            # 891 ms. Three things are waiting on that loop: a motion
+            # supervisor that wants it every 25 ms, a speaker with 1.33 s of
+            # buffered announcement, and a microphone whose ring buffer holds
+            # 512 ms and discards its oldest bytes when it fills. Only the
+            # first two can be waited for; the weather keeps, a movement in
+            # flight and a sentence being spoken do not.
+            and:
+              - not:
+                  media_player.is_announcing: andy_media_player
+              - lambda: "return !id(motion_active) && !id(motion_program_active);"
           then:
             - script.execute: read_the_weather
 
@@ -176,6 +184,8 @@ interval:
           condition:
             and:
               - wifi.connected:
+              - not:
+                  media_player.is_announcing: andy_media_player
               - lambda: "return !id(weather_known) && !id(motion_active) && !id(motion_program_active);"
           then:
             - script.execute: read_the_weather
