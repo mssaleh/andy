@@ -75,6 +75,16 @@ esp32_camera:
   frame_buffer_count: 1
   frame_buffer_location: PSRAM
   max_framerate: 15.0 fps
+  # The component's default is 0.1 fps, which photographs the room every ten
+  # seconds whether or not anyone asked. Converting one 320x240 RGB565 frame to
+  # JPEG costs 134 ms inside `ESP32Camera::loop()` -- a single spike larger than
+  # everything else Andy does in a pass, against a motion supervisor that wants
+  # the loop back every 25 ms. It also raises the shutter mark above, so the
+  # honest indicator spends the day announcing pictures nobody asked for. Zero
+  # takes the fast path out of `loop()` while nothing is requested;
+  # `request_single_image` over the API, which is how the server looks, still
+  # returns a frame.
+  idle_framerate: 0 fps
   jpeg_quality: 12
   brightness: 1
   contrast: 1

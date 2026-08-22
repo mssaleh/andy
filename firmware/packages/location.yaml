@@ -160,14 +160,14 @@ sensor:
           return id(location_known).state ? x : optional<float>{};
 
 binary_sensor:
+  # Published rather than polled, like `location_known` below. A template
+  # binary sensor that carries a lambda runs it from `loop()`, once per
+  # main-loop iteration -- for this one, solving the sun's position at 0.755 ms
+  # a time, 481755 times in three hours, to answer a question that changes
+  # twice a day. So it carries no lambda, and the interval below supplies it.
   - platform: template
     id: daylight
     name: Daylight
-    lambda: |-
-      if (!id(location_known).state) {
-        return {};
-      }
-      return id(andy_sun).is_above_horizon();
 
   # Published rather than polled: the position changes when it is learned and
   # at no other time, so there is nothing for a poll to discover.
@@ -202,6 +202,19 @@ text_sensor:
     update_interval: never
 
 interval:
+  # Whether the sun is up. A minute is finer than `Next sunrise` and
+  # `Next sunset` can express, which is the precision anything downstream is
+  # entitled to. Re-publishing an unchanged state costs nothing: the entity
+  # compares before it notifies, so nothing reaches the API between crossings.
+  - interval: 60s
+    then:
+      - lambda: |-
+          if (!id(location_known).state) {
+            id(daylight).invalidate_state();
+            return;
+          }
+          id(daylight).publish_state(id(andy_sun).is_above_horizon());
+
   # Where Andy is is a fact that changes, so it is asked on a schedule rather
   # than once at startup. Boot only would mean a robot carried to another city
   # keeps answering for the old one until something happens to restart it, and

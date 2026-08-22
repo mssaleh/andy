@@ -18,7 +18,7 @@ from .agent import AgentConversation, AndyDeps, build_agent
 from .arbiter import SpeechArbiter
 from .bus import EventBus, Route
 from .device import DeviceState
-from .effects import EffectController
+from .effects import EffectController, EmotionRequest
 from .vision import VisionProvider
 from .motion import MotionController, catalog_snapshot
 from .speaker import SpeakerOutput
@@ -225,7 +225,7 @@ async def lifespan(app: FastAPI):
     if bridge is not None:
         await bridge.start()
     if bus is not None and arbiter is not None:
-        _install_event_rules(bus, arbiter, conversation, device, actions)
+        _install_event_rules(bus, arbiter, conversation, device, actions, effects)
         bus.start()
     if scheduler is not None:
         scheduler.start()
@@ -250,6 +250,7 @@ def _install_event_rules(
     conversation: AgentConversation | None,
     device: DeviceState | None,
     actions: AgentActions | None = None,
+    effects: EffectController | None = None,
 ) -> None:
     """What Andy does about an event, and what he thinks about first.
 
@@ -263,10 +264,28 @@ def _install_event_rules(
 
     async def fixed_rule(event) -> None:
         if event.kind is EventKind.BATTERY_LOW:
-            await arbiter.say(
-                "My battery is getting low. Could you plug me in?",
-                Priority.ALERT,
-            )
+            # The face first, and only then the sentence. This warning has
+            # roughly half an hour of charge to work with and repeats every
+            # fifteen minutes, so it gets two or three attempts at most -- and
+            # a spoken one reaches nobody if the synthesiser is unreachable or
+            # the room is empty, leaving Andy to run flat without ever showing
+            # it. A tired face needs nothing but the robot itself.
+            if effects is not None and effects.available():
+                try:
+                    await effects.set_emotion(EmotionRequest("sleepy", 70))
+                except Exception:
+                    log.warning("could not show the low battery on Andy's face")
+                    log.debug("low battery face failed", exc_info=True)
+            try:
+                await arbiter.say(
+                    "My battery is getting low. Could you plug me in?",
+                    Priority.ALERT,
+                )
+            except Exception as error:
+                # One line, not the synthesiser's whole call stack: the fact
+                # that matters is that a low battery went unannounced.
+                log.warning("could not say the low battery warning: %s", error)
+                log.debug("low battery speech failed", exc_info=True)
         elif event.kind is EventKind.MOTION_FAULTED:
             # Deliberately silent. A motion fault is already visible on the
             # face and the ring, and announcing it would interrupt whatever
